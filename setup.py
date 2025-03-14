@@ -1,5 +1,5 @@
 from setuptools import setup, find_namespace_packages
-
+raise NotImplementedError("Please fill in the metadata in setup.py")
 setup(
     name="mypackage",
     url="https://github.com/tboulet/mypackage", 
