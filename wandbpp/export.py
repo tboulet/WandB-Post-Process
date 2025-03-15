@@ -45,7 +45,8 @@ def main(config: DictConfig):
             run: public.Run
             run_id = run.id
             run_name = run.name or run_id
-            run_path = os.path.join(export_dir, run_name)
+            safe_run_name = run_name.replace("/", "_")
+            run_path = os.path.join(export_dir, safe_run_name)
 
             df = run.history(samples=10000, pandas=True)
 
