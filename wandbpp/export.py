@@ -25,8 +25,10 @@ def main(config: DictConfig):
 
     # W&B Project Information
     wandb_project = config["project"]
-    entity = config.get("entity", None)
+    entity = config.get("entity", "")
     filters = config.get("filters", None)
+    samples = config.get("samples", 10000)
+    min_n_metrics = config.get("min_n_metrics", 1)
     
     # Export directory
     export_dir = config.get("export_dir", "data/wandb_exports")
@@ -36,48 +38,60 @@ def main(config: DictConfig):
     
     api = wandb.Api()
     runs = api.runs(
-        path=f"{entity}/{wandb_project}" if entity else wandb_project,
+        path=os.path.join(entity, wandb_project),
         filters=filters,
     )
 
+    n_runs = len(runs)
     for run in runs:
         try:
             run: public.Run
             run_id = run.id
             run_name = run.name or run_id
             safe_run_name = run_name.replace("/", "_")
-            run_path = os.path.join(export_dir, safe_run_name)
+            run_path = os.path.join(export_dir, safe_run_name)            
+            run_url = os.path.join("https://api.wandb.ai/files", entity, wandb_project, run_id)
+            
+            df = run.history(samples=samples, pandas=True)
 
-            df = run.history(samples=10000, pandas=True)
-
-            # Apply filters
-            if "_step" in df.columns and df["_step"].max() < 1000:
-                print(f"Skipping run {run_name} (max _step: {df['_step'].max()})")
-                continue
-
-            if len(df.columns) < 10:
+            if len(df.columns) < min_n_metrics:
                 print(f"Skipping run {run_name} (only {len(df.columns)} metrics logged)")
                 continue
             
             os.makedirs(run_path, exist_ok=True)
             print(f"Exporting run: {run_name} (ID: {run_id})")
 
-            # Separate scalars and histograms
+            # Get the last logged step as reference
+            step_max = df["_step"].max() if "_step" in df.columns else None
+            last_logged_data = df[df["_step"] == step_max].iloc[-1] if step_max is not None else None
+            
+            # Save metadata
+            metadata_path = os.path.join(run_path, "metadata.yaml")
+            with open(metadata_path, "w") as f:
+                yaml.dump({
+                    "id": run_id,
+                    "name": run_name,
+                    "url": run_url,
+                    "step_max": convert_numpy(step_max),
+                }, f, default_flow_style=False)
+            print(f"Saved metadata to {metadata_path}")
+                
+            # Separate scalars, histograms, and images
             scalars = {}
             histograms = {}
             images = {}
             
             for col in df.columns:
-                sample_value = df[col].dropna().iloc[-1] if not df[col].dropna().empty else None
+                if last_logged_data is not None and col in last_logged_data:
+                    sample_value = last_logged_data[col]
+                    if isinstance(sample_value, dict) and "_type" in sample_value:
+                        if sample_value["_type"] == "histogram":
+                            histograms[col] = df[col].dropna().tolist()
+                        elif sample_value["_type"] == "image-file":
+                            images[col] = df[col].dropna().tolist()
+                    else:
+                        scalars[col] = df[col].dropna().tolist()
                 
-                if isinstance(sample_value, dict) and "_type" in sample_value:
-                    if sample_value["_type"] == "histogram":
-                        histograms[col] = sample_value
-                    elif sample_value["_type"] == "image-file":
-                        images[col] = sample_value
-                else:
-                    scalars[col] = df[col].dropna().tolist()
-
             # Save scalars (metrics) to CSV
             scalar_df = df[list(scalars.keys())]
             metrics_path = os.path.join(run_path, "metrics.csv")
@@ -101,6 +115,7 @@ def main(config: DictConfig):
             with open(config_path_yaml, "w") as f:
                 yaml.dump(run.config, f, default_flow_style=False)
             print(f"Saved config to {config_path_yaml}")
+            
             breakpoint()
         except Exception as e:
             print(f"Error processing run {run_name}: {e}")
