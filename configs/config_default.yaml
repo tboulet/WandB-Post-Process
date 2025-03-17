@@ -1,1 +1,29 @@
-project: tboulet/EcoJAX
+project: timotheboulet/EcoJAX
+filters:
+  "summary_metrics._step":
+    "$gte": 50000
+  "config.benchmark_name": bench16_fp_hc
+samples: 10000
+min_n_metrics: 10
+
+# Which data types to log.
+data_types:
+  scalar : True
+  histogram : False
+  image_url: True
+  config : True
+  metadata : True
+
+# Defaults sub-configs and other Hydra config.
+defaults:
+  - _self_
+  - override hydra/hydra_logging: default  
+  - override hydra/job_logging: stdout 
+
+
+# Hydra config, do not change.
+hydra:
+  output_subdir: null
+  run:
+    dir: .
+  
