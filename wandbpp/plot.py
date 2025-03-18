@@ -7,7 +7,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from omegaconf import DictConfig, OmegaConf
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 # Set up logging configuration
 logging.basicConfig(
@@ -24,18 +24,28 @@ class Plotter:
         Args:
             config (DictConfig): Hydra configuration object.
         """
-        self.config = dict(config)  # Convert to standard dict if needed
+        # Extract configuration parameters
+        self.config = dict(config)
+        self.runs_path = self.config.get("runs_path", "data/wandb_exports")
+        self.metric: str = self.config["metric"]
         self.filters: List[str] = self.config.get("filters", [])
         self.grouping_fields: List[str] = self.config.get("grouping", [])
-        self.metric: str = self.config["metric"]
-        self.runs_path = self.config.get("runs_path", "data/wandb_exports")
+        self.method_aggregate: str = self.config.get("method_aggregate", "mean")
+        self.method_error: str = self.config.get("method_error", "std")
+        self.x_axis: str = self.config.get("x_axis", "_step")
+        self.x_lim = self.config.get("x_lim", None)
+        self.y_lim = self.config.get("y_lim", None)
+        self.do_try_include_y0: bool = self.config.get("do_try_include_y0", False)
+        self.ratio_near_y0 : str = self.config.get("ratio_near_y0", 0.5)
+        self.do_grid: bool = self.config.get("do_grid", False)
+
+        # Define additional attributes
         self.grouping_fields_repr = ", ".join(
             [field.split(".")[-1] for field in self.grouping_fields]
         )
+        self.metric_repr = self.metric.replace("metrics.", "")
         self.runs = []
         self.grouped_data = {}
-        self.x_lim = self.config.get("x_lim", None)
-        self.y_lim = self.config.get("y_lim", None)
 
     def load_run_data(self, run_path: str) -> Dict[str, Any]:
         """Loads scalar metrics and config from a run directory.
@@ -99,40 +109,124 @@ class Plotter:
                 self.grouped_data[group_key] = []
             self.grouped_data[group_key].append(run)
 
+    def try_include_y0(
+        self, y_lim: Optional[List[float]], y_min: float, y_max: float
+    ) -> List[float]:
+        """Tries to include y=0 in the y-axis limits if 0 is close to the points relatively to the range |y_max - y_min|.
+
+        Args:
+            y_lim (Optional[List[float]]): Y-axis limits.
+            merged_df (pd.DataFrame): DataFrame containing all metric values.
+
+        Returns:
+            List[float]: Updated y-axis limits.
+        """
+        if y_min <= 0 <= y_max:  # negative and positive values (already includes 0)
+            return y_lim
+        range_values = y_max - y_min
+        if y_min <= y_max <= 0:  # negative values only
+            if range_values > self.ratio_near_y0 * -y_min:
+                return [y_min, 0]
+            else:
+                return y_lim
+        elif 0 <= y_min <= y_max:  # positive values only
+            if range_values > self.ratio_near_y0 * y_max:
+                return [0, y_max]
+            else:
+                return y_lim
+        else:
+            raise ValueError("Invalid y-axis limits.")
+
     def plot_grouped_data(self):
-        """Plots metrics with mean and standard error for each group."""
+        """Plots metrics with mean and standard error for each group.
+        Also defines y_min and y_max based on the metric values.
+        """
         plt.figure(figsize=(10, 6))
+        self.y_min, self.y_max = np.inf, -np.inf
 
         for group_key, runs in self.grouped_data.items():
-            all_dfs = []
-
+            # Get the merged DataFrame for all runs in the group
+            list_group_dfs = []
             for run in runs:
                 df = run["scalars"]
-                if "_step" in df.columns and self.metric in df.columns:
-                    df = df.set_index("_step")[[self.metric]]
-                    all_dfs.append(df)
-
-            if not all_dfs:
+                if self.x_axis in df.columns:
+                    try:
+                        metric_values = eval(self.metric, {"metrics": df})
+                        self.y_min = min(metric_values.min(), self.y_min)
+                        self.y_max = max(metric_values.max(), self.y_max)
+                        df[self.metric] = metric_values
+                        list_group_dfs.append(df[[self.metric]])
+                    except Exception as e:
+                        logger.warning(
+                            f"Could not evaluate metric expression '{self.metric}' - {e}"
+                        )
+                        continue
+                else:
+                    logger.warning(
+                        f"Could not find x-axis column '{self.x_axis}' in DataFrame for run {run['config']['name']}"
+                    )
+            if not list_group_dfs:  # Skip group if no valid data
+                logger.warning(f"Skipping group {group_key} due to missing data.")
                 continue
+            merged_df = pd.concat(list_group_dfs, axis=1, join="outer")
 
-            merged_df = pd.concat(all_dfs, axis=1, join="outer")
-            mean_values = merged_df.mean(axis=1, skipna=True)
-            std_error = merged_df.std(axis=1, skipna=True) / np.sqrt(len(runs))
+            # Get the x-axis values (take last DataFrame as reference)
+            x_values = df[self.x_axis]
+            
+            # Compute aggregated values
+            if self.method_aggregate == "mean":
+                values_aggregated = merged_df.mean(axis=1, skipna=True)
+            elif self.method_aggregate == "median":
+                values_aggregated = merged_df.median(axis=1, skipna=True)
+            elif self.method_aggregate == "max":
+                values_aggregated = merged_df.max(axis=1, skipna=True)
+            elif self.method_aggregate == "min":
+                values_aggregated = merged_df.min(axis=1, skipna=True)
+            else:
+                raise ValueError(f"Invalid method_aggregate: {self.method_aggregate}")
 
-            plt.plot(mean_values.index, mean_values, label=f"{group_key}")
-            plt.fill_between(
-                mean_values.index,
-                mean_values - std_error,
-                mean_values + std_error,
-                alpha=0.2,
-            )
+            # Compute error values
+            if self.method_error == "std":
+                delta_low = delta_high = merged_df.std(axis=1, skipna=True)
+            elif self.method_error == "sem":
+                delta_low = delta_high = merged_df.sem(axis=1, skipna=True)
+            elif self.method_error == "range":
+                delta_low = values_aggregated - merged_df.min(axis=1, skipna=True)
+                delta_high = merged_df.max(axis=1, skipna=True) - values_aggregated
+            elif self.method_error == "none":
+                delta_low = delta_high = None
+            else:
+                raise ValueError(f"Invalid method_error: {self.method_error}")
+
+            # Plot aggregated values
+            plt.plot(x_values, values_aggregated, label=f"{group_key}")
+            if delta_low is not None and delta_high is not None:
+                plt.fill_between(
+                    x_values,
+                    values_aggregated - delta_low,
+                    values_aggregated + delta_high,
+                    alpha=0.2,
+                )
+                
+            # Update y_min and y_max based on the group values
+            if delta_low is not None and delta_high is not None:
+                self.y_min = min(values_aggregated.min() - delta_low.min(), self.y_min)
+                self.y_max = max(values_aggregated.max() + delta_high.max(), self.y_max)
+            else:
+                self.y_min = min(values_aggregated.min(), self.y_min)
+                self.y_max = max(values_aggregated.max(), self.y_max)
 
         plt.xlabel("Steps")
-        plt.ylabel(self.metric)
+        plt.ylabel(self.metric_repr)
         plt.xlim(self.x_lim)
+        if self.do_try_include_y0:
+            self.y_lim = self.try_include_y0(
+                self.y_lim, y_min=self.y_min, y_max=self.y_max
+            )
         plt.ylim(self.y_lim)
         plt.legend()
-        plt.title(f"{self.metric} aggregated by {self.grouping_fields_repr}")
+        plt.grid(visible=self.config["kwargs_grid"])
+        plt.title(f"{self.metric_repr} (aggregated by {self.grouping_fields_repr})")
 
         plt.show()
 

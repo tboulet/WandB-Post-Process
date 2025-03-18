@@ -2,7 +2,7 @@
 runs_path: data/wandb_exports
 
 # The metric that will be used for the plot.
-metric: n_agents
+metric: -metrics.n_agents + metrics.n_plants * 2 +10000
 
 # The filters that will be applied to the config for accepting a run.
 # This will be done with an 'eval' function, so you can use any python code.
@@ -14,10 +14,24 @@ filters:
 grouping:
   - "config.env.variability_fruits"
 
+# The methods to use for aggregation (solid line) and error bars (shaded area).
+method_aggregate: mean # among mean, median, min, max
+method_error: std # among std, sem, none
+
+# The x-axis (default: _step).
+x_axis: _step
+
+# ==== Plotting options ====
 # The x-limits of the plot. By default it will be the min and max of the x-axis metric. 
 x_lim: null
 y_lim: null
-
+# Whether to try adding y=0 to the limits if 0 is not too far away from the data (nearest than the data range).
+do_try_include_y0: True
+ratio_near_y0: 0.5 # The ratio of the data range that should be considered as "near" 0.
+# Whether to do grid on the plot and the grid configuration.
+do_grid: True
+kwargs_grid:
+  visible: ${do_grid}
 
 
 # Defaults sub-configs and other Hydra config.
