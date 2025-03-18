@@ -1,0 +1,22 @@
+name: moving P towards rho_fruit=low rho_agents=high (fruit 3) | nh=typical, value=positive/moving/pop_mean
+runs_path: data/wandb_exports
+
+filters:
+  - "config.benchmark_name == 'bench16_fp_hc'"
+
+grouping:
+  - "config.env.variability_fruits"
+
+# Defaults sub-configs and other Hydra config.
+defaults:
+  - _self_
+  - override hydra/hydra_logging: default  
+  - override hydra/job_logging: stdout 
+
+
+# Hydra config, do not change.
+hydra:
+  output_subdir: null
+  run:
+    dir: .
+  

@@ -15,9 +15,8 @@ import cProfile
 
 # Set up logging configuration
 logging.basicConfig(
-    level=logging.DEBUG,  # Default level to INFO, can be adjusted via config or command line
+    level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
-    stream=sys.stdout  # Ensure logs are printed to the console
 )
 logger = logging.getLogger(__name__)
 
@@ -29,7 +28,7 @@ def convert_numpy(obj):
         return obj.tolist()
     return obj
 
-@hydra.main(config_path="../configs", config_name="config_default.yaml")
+@hydra.main(config_path="../configs_export", config_name="config_default.yaml")
 def main(config: DictConfig):
     # Resolve Hydra config
     config = OmegaConf.to_container(config, resolve=True)
@@ -135,7 +134,7 @@ def main(config: DictConfig):
                     yaml.dump(run.config, f, default_flow_style=False)
                 logger.info(f"Saved config to {config_path_yaml}")
             
-            breakpoint()
+            # breakpoint()
             
         except Exception as e:
             logger.error(f"Error processing run {run_name}: {e}")
@@ -146,5 +145,6 @@ if __name__ == "__main__":
     with cProfile.Profile() as pr:
         main()
     log_file_cprofile = "logs/profile_stats.prof"
+    os.makedirs("logs", exist_ok=True)
     pr.dump_stats(log_file_cprofile)
     logger.info(f"[PROFILING] Profile stats dumped to {log_file_cprofile}. You can visualize it using 'snakeviz {log_file_cprofile}'")
