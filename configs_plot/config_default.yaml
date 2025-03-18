@@ -1,11 +1,22 @@
-name: moving P towards rho_fruit=low rho_agents=high (fruit 3) | nh=typical, value=positive/moving/pop_mean
+# The path to the data that will be used for the plot (default: data/wandb_exports).
 runs_path: data/wandb_exports
 
+# The metric that will be used for the plot.
+metric: n_agents
+
+# 
+
+# The filters that will be applied to the config for accepting a run.
+# This will be done with an 'eval' function, so you can use any python code.
 filters:
   - "config.benchmark_name == 'bench16_fp_hc'"
-
+# The groupings that will be applied to the config for grouping the runs.
+# It is composed of a list of python expressions that will be evaluated.
+# The data will be grouped by the unique values of the tuple expression.
 grouping:
   - "config.env.variability_fruits"
+
+
 
 # Defaults sub-configs and other Hydra config.
 defaults:

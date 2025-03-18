@@ -16,19 +16,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-
-def parse_filters(config: Dict[str, Any]) -> List[str]:
-    """Extracts filter conditions from the config."""
-    return config.get("filters", [])
-
-
-def parse_grouping(config: Dict[str, Any]) -> List[str]:
-    """Extracts grouping fields from the config."""
-    return config.get("grouping", [])
-
-
 def load_run_data(run_path: str) -> Dict[str, Any]:
-    """Loads scalar metrics and config from a run directory."""
+    """Loads scalar metrics and config from a run directory.
+    
+    Args:
+        run_path (str): Path to the run directory.
+    
+    Returns:
+        Dict[str, Any]: Dictionary containing scalars DataFrame and run config.
+    """
     scalars_path = os.path.join(run_path, "scalars.csv")
     config_path = os.path.join(run_path, "config.yaml")
 
@@ -41,9 +37,16 @@ def load_run_data(run_path: str) -> Dict[str, Any]:
     run_config = OmegaConf.create(run_config)
     return {"scalars": scalars_df, "config": run_config}
 
-
 def apply_filters(run_data: Dict[str, Any], filters: List[str]) -> bool:
-    """Applies filters to determine if a run should be included."""
+    """Applies filters to determine if a run should be included.
+    
+    Args:
+        run_data (Dict[str, Any]): Run data containing scalars and config.
+        filters (List[str]): List of filter conditions.
+    
+    Returns:
+        bool: True if run satisfies all filters, False otherwise.
+    """
     run_config = run_data["config"]
     for filter_condition in filters:
         try:
@@ -54,11 +57,18 @@ def apply_filters(run_data: Dict[str, Any], filters: List[str]) -> bool:
             return False
     return True
 
-
 def group_runs(
     runs: List[Dict[str, Any]], grouping_fields: List[str]
 ) -> Dict[tuple, List[Dict[str, Any]]]:
-    """Groups runs based on specified grouping fields."""
+    """Groups runs based on specified grouping fields.
+    
+    Args:
+        runs (List[Dict[str, Any]]): List of run data.
+        grouping_fields (List[str]): List of fields to group by.
+    
+    Returns:
+        Dict[tuple, List[Dict[str, Any]]]: Dictionary mapping group keys to runs.
+    """
     grouped_data = {}
     for run in runs:
         run_config = run["config"]
@@ -78,46 +88,53 @@ def group_runs(
 
     return grouped_data
 
-
-def plot_grouped_data(grouped_data: Dict[tuple, List[Dict[str, Any]]]):
-    """Plots metrics with mean and standard error for each group."""
+def plot_grouped_data(grouped_data: Dict[tuple, List[Dict[str, Any]]], metric: str):
+    """Plots metrics with mean and standard error for each group.
+    
+    Args:
+        grouped_data (Dict[tuple, List[Dict[str, Any]]]): Grouped run data.
+        metric (str): Metric to plot.
+    """
     plt.figure(figsize=(10, 6))
 
     for group_key, runs in grouped_data.items():
-        all_steps = []
-        all_values = []
+        all_dfs = []
 
         for run in runs:
             df = run["scalars"]
-            if "_step" in df.columns:
-                steps = df["_step"].values
-                metric_name = [col for col in df.columns if col != "_step"][
-                    0
-                ]  # Assuming one metric
-                values = df[metric_name].values
+            if "_step" in df.columns and metric in df.columns:
+                df = df.set_index("_step")[[metric]]
+                all_dfs.append(df)
 
-                all_steps.append(steps)
-                all_values.append(values)
+        if not all_dfs:
+            continue
 
-        mean_values = np.mean(all_values, axis=0)
-        std_error = np.std(all_values, axis=0) / np.sqrt(len(runs))
-        plt.plot(steps, mean_values, label=f"Group: {group_key}")
+        merged_df = pd.concat(all_dfs, axis=1, join="outer")
+        mean_values = merged_df.mean(axis=1, skipna=True)
+        std_error = merged_df.std(axis=1, skipna=True) / np.sqrt(len(runs))
+
+        plt.plot(mean_values.index, mean_values, label=f"Group: {group_key}")
         plt.fill_between(
-            steps, mean_values - std_error, mean_values + std_error, alpha=0.2
+            mean_values.index, mean_values - std_error, mean_values + std_error, alpha=0.2
         )
 
     plt.xlabel("Steps")
-    plt.ylabel("Metric Value")
+    plt.ylabel(metric)
     plt.legend()
-    plt.title("Aggregated Metrics by Group")
+    plt.title(f"{metric} by Group")
     plt.show()
-
 
 @hydra.main(config_path="../configs_plot", config_name="config_default.yaml")
 def main(config: DictConfig):
+    """Main function for loading, filtering, grouping, and plotting run data.
+    
+    Args:
+        config (DictConfig): Hydra configuration object.
+    """
     config = dict(config)  # Convert to standard dict if needed
     filters = config.get("filters", [])
     grouping_fields = config.get("grouping", [])
+    metric = config.get("metric", "loss")  # Default metric to "loss"
     runs_path = config.get("runs_path", "data/wandb_exports")
 
     run_dirs = [
@@ -141,9 +158,8 @@ def main(config: DictConfig):
         f"Grouped data by fields {grouping_fields} to obtain {grouped_data_keys if len(grouped_data_keys) < 10 else grouped_data_keys[:10] + ['...']} (total: {len(grouped_data_keys)})"
     )
 
-    plot_grouped_data(grouped_data)
+    plot_grouped_data(grouped_data, metric)
     logger.info("")
-
 
 if __name__ == "__main__":
     main()
