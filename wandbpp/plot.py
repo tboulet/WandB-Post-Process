@@ -37,16 +37,22 @@ class Plotter:
         self.x_lim = self.config.get("x_lim", None)
         self.y_lim = self.config.get("y_lim", None)
         self.do_try_include_y0: bool = self.config.get("do_try_include_y0", False)
-        self.ratio_near_y0 : str = self.config.get("ratio_near_y0", 0.5)
+        self.ratio_near_y0: str = self.config.get("ratio_near_y0", 0.5)
         self.do_grid: bool = self.config.get("do_grid", False)
 
         # Define additional attributes
-        self.grouping_fields_repr = ", ".join(
-            [field.split(".")[-1] for field in self.grouping_fields]
-        )
+        self.grouping_fields_repr = [field.split(".")[-1] for field in self.grouping_fields]
+        if len(self.grouping_fields_repr) == 0:
+            self.grouping_fields_repr = ["All"]
+        elif len(self.grouping_fields_repr) == 1:
+            self.grouping_fields_repr = self.grouping_fields_repr[0]
+        else:
+            self.grouping_fields_repr = f"({', '.join(self.grouping_fields_repr)})"
+        
         self.metric_repr = self.metric.replace("metrics.", "")
-        self.runs = []
-        self.grouped_data = {}
+        self.run_dirs: List[str] = []
+        self.runs: List[Dict[str, Any]] = []
+        self.grouped_data: Dict[Any, List[Dict[str, Any]]] = {}
 
     def load_run_data(self, run_path: str) -> Dict[str, Any]:
         """Loads scalar metrics and config from a run directory.
@@ -88,6 +94,13 @@ class Plotter:
                 return False
         return True
 
+    def load_and_filter_run_data(self):
+        for run_dir in tqdm(self.run_dirs, desc="Filtering ..."):
+            run_data = self.load_run_data(run_dir)
+            if run_data and self.apply_filters(run_data):
+                self.runs.append(run_data)
+        logger.info(f"Loaded {len(self.runs)} runs after filtering.")
+
     def group_runs(self):
         """Groups runs based on specified grouping fields."""
         if len(self.grouping_fields) == 0:
@@ -98,12 +111,14 @@ class Plotter:
         for run in self.runs:
             run_config = run["config"]
             try:
-                group_key = tuple(
-                    eval(field, {"config": run_config})
+                group_key = [
+                    str(eval(field, {"config": run_config}))
                     for field in self.grouping_fields
-                )
+                ]
                 if len(group_key) == 1:
                     group_key = group_key[0]
+                else:
+                    group_key = ', '.join(group_key)
             except Exception as e:
                 logger.warning(
                     f"Could not evaluate grouping field '{self.grouping_fields}' - {e}"
@@ -117,7 +132,7 @@ class Plotter:
         logger.info(
             f"Obtained {len(grouped_data_keys)} groups by grouping by {self.grouping_fields_repr} to obtain {grouped_data_keys if len(grouped_data_keys) < 10 else grouped_data_keys[:10] + ['...']}"
         )
-        
+
     def try_include_y0(
         self, y_lim: Optional[List[float]], y_min: float, y_max: float
     ) -> List[float]:
@@ -153,16 +168,20 @@ class Plotter:
         plt.figure(figsize=(10, 6))
         self.y_min, self.y_max = np.inf, -np.inf
 
-        if len(self.grouped_data) == 1:
-            self.grouped_data = {self.method_aggregate: v for k, v in self.grouped_data.items()} # If only one group, use the method_aggregate as the key
-            
+        if (
+            len(self.grouped_data) == 1
+        ):  # If only one group, use the method_aggregate as the key
+            self.grouped_data = {
+                self.method_aggregate: v for k, v in self.grouped_data.items()
+            }
+
         for group_key, runs in self.grouped_data.items():
             # Get the merged DataFrame for all runs in the group
-            list_group_dfs = []
+            list_group_dfs : List[pd.DataFrame] = []
             df_x_values = pd.DataFrame()
             max_t = -np.inf
             for run in runs:
-                df = run["scalars"]
+                df : pd.DataFrame = run["scalars"]
                 if self.x_axis in df.columns:
                     try:
                         metric_values = eval(self.metric, {"metrics": df, "np": np})
@@ -186,7 +205,7 @@ class Plotter:
                 continue
             merged_df = pd.concat(list_group_dfs, axis=1, join="outer")
             x_values = df_x_values[self.x_axis]
-            
+
             # Compute aggregated values
             mean_values = merged_df.mean(axis=1, skipna=True)
             if self.method_aggregate == "mean":
@@ -222,7 +241,7 @@ class Plotter:
                     mean_values + delta_high,
                     alpha=0.2,
                 )
-                
+
             # Update y_min and y_max based on the group values
             if delta_low is not None and delta_high is not None:
                 self.y_min = min(values_aggregated.min() - delta_low.min(), self.y_min)
@@ -255,22 +274,23 @@ class Plotter:
 
     def run(self):
         """Executes the full pipeline: loading, filtering, grouping, and plotting."""
-        run_dirs = [
+        self.run_dirs = [
             os.path.join(self.runs_path, d)
             for d in os.listdir(self.runs_path)
             if os.path.isdir(os.path.join(self.runs_path, d))
         ]
-        logger.info(f"Found {len(run_dirs)} runs in {self.runs_path}.")
+        logger.info(f"Found {len(self.run_dirs)} runs in {self.runs_path}.")
 
-        for run_dir in tqdm(run_dirs, desc="Filtering ..."):
-            run_data = self.load_run_data(run_dir)
-            if run_data and self.apply_filters(run_data):
-                self.runs.append(run_data)
-        logger.info(f"Loaded {len(self.runs)} runs after filtering.")
-
+        # Load and filter run data
+        self.load_and_filter_run_data()
+        if len(self.runs) == 0:
+            logger.warning("No runs to plot.")
+            return
+        
         # Group runs based on specified fields
         self.group_runs()
 
+        # Plot grouped data
         self.plot_grouped_data()
         logger.info("Plotting complete.")
 

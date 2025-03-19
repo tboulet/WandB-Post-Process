@@ -13,6 +13,7 @@ filters:
 # The data will be grouped by the unique values of the tuple expression.
 grouping:
   - "config.env.variability_fruits"
+  - "config.benchmarke_name"
 
 # The methods to use for aggregation (solid line) and error bars (shaded area).
 method_aggregate: median # among mean, median, min, max
