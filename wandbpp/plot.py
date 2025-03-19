@@ -1,4 +1,5 @@
 import logging
+import re
 from tqdm import tqdm
 import yaml
 import os
@@ -80,7 +81,7 @@ class Plotter:
         run_config = run_data["config"]
         for filter_condition in self.filters:
             try:
-                if not eval(filter_condition, {"config": run_config}):
+                if not eval(filter_condition, {"config": run_config, "re": re}):
                     return False
             except Exception as e:
                 print(f"Warning: Could not evaluate filter '{filter_condition}' - {e}")
@@ -147,15 +148,19 @@ class Plotter:
         for group_key, runs in self.grouped_data.items():
             # Get the merged DataFrame for all runs in the group
             list_group_dfs = []
+            df_x_values = pd.DataFrame()
+            max_t = -np.inf
             for run in runs:
                 df = run["scalars"]
                 if self.x_axis in df.columns:
                     try:
-                        metric_values = eval(self.metric, {"metrics": df})
-                        self.y_min = min(metric_values.min(), self.y_min)
-                        self.y_max = max(metric_values.max(), self.y_max)
+                        metric_values = eval(self.metric, {"metrics": df, "np": np})
                         df[self.metric] = metric_values
                         list_group_dfs.append(df[[self.metric]])
+                        # Get the x-axis values (take last DataFrame as reference)
+                        if max_t < df[self.x_axis].max():
+                            max_t = df[self.x_axis].max()
+                            df_x_values = df[[self.x_axis]]
                     except Exception as e:
                         logger.warning(
                             f"Could not evaluate metric expression '{self.metric}' - {e}"
@@ -169,9 +174,7 @@ class Plotter:
                 logger.warning(f"Skipping group {group_key} due to missing data.")
                 continue
             merged_df = pd.concat(list_group_dfs, axis=1, join="outer")
-
-            # Get the x-axis values (take last DataFrame as reference)
-            x_values = df[self.x_axis]
+            x_values = df_x_values[self.x_axis]
             
             # Compute aggregated values
             if self.method_aggregate == "mean":

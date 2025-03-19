@@ -34,12 +34,12 @@ kwargs_grid:
   visible: ${do_grid}
 
 
+
 # Defaults sub-configs and other Hydra config.
 defaults:
   - _self_
   - override hydra/hydra_logging: default  
   - override hydra/job_logging: stdout 
-
 
 # Hydra config, do not change.
 hydra:
