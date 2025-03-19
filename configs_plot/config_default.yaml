@@ -15,8 +15,8 @@ grouping:
   - "config.env.variability_fruits"
 
 # The methods to use for aggregation (solid line) and error bars (shaded area).
-method_aggregate: mean # among mean, median, min, max
-method_error: std # among std, sem, none
+method_aggregate: median # among mean, median, min, max
+method_error: range # among std, sem, range, none
 
 # The x-axis (default: _step).
 x_axis: _step

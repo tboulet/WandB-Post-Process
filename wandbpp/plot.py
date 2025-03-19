@@ -90,6 +90,10 @@ class Plotter:
 
     def group_runs(self):
         """Groups runs based on specified grouping fields."""
+        if len(self.grouping_fields) == 0:
+            self.grouped_data = {("All",): self.runs}
+            return
+        logger.info(f"Grouping runs by {self.grouping_fields_repr}...")
         self.grouped_data = {}
         for run in self.runs:
             run_config = run["config"]
@@ -109,7 +113,11 @@ class Plotter:
             if group_key not in self.grouped_data:
                 self.grouped_data[group_key] = []
             self.grouped_data[group_key].append(run)
-
+        grouped_data_keys = list(self.grouped_data.keys())
+        logger.info(
+            f"Obtained {len(grouped_data_keys)} groups by grouping by {self.grouping_fields_repr} to obtain {grouped_data_keys if len(grouped_data_keys) < 10 else grouped_data_keys[:10] + ['...']}"
+        )
+        
     def try_include_y0(
         self, y_lim: Optional[List[float]], y_min: float, y_max: float
     ) -> List[float]:
@@ -145,6 +153,9 @@ class Plotter:
         plt.figure(figsize=(10, 6))
         self.y_min, self.y_max = np.inf, -np.inf
 
+        if len(self.grouped_data) == 1:
+            self.grouped_data = {self.method_aggregate: v for k, v in self.grouped_data.items()} # If only one group, use the method_aggregate as the key
+            
         for group_key, runs in self.grouped_data.items():
             # Get the merged DataFrame for all runs in the group
             list_group_dfs = []
@@ -177,8 +188,9 @@ class Plotter:
             x_values = df_x_values[self.x_axis]
             
             # Compute aggregated values
+            mean_values = merged_df.mean(axis=1, skipna=True)
             if self.method_aggregate == "mean":
-                values_aggregated = merged_df.mean(axis=1, skipna=True)
+                values_aggregated = mean_values
             elif self.method_aggregate == "median":
                 values_aggregated = merged_df.median(axis=1, skipna=True)
             elif self.method_aggregate == "max":
@@ -194,8 +206,8 @@ class Plotter:
             elif self.method_error == "sem":
                 delta_low = delta_high = merged_df.sem(axis=1, skipna=True)
             elif self.method_error == "range":
-                delta_low = values_aggregated - merged_df.min(axis=1, skipna=True)
-                delta_high = merged_df.max(axis=1, skipna=True) - values_aggregated
+                delta_low = mean_values - merged_df.min(axis=1, skipna=True)
+                delta_high = merged_df.max(axis=1, skipna=True) - mean_values
             elif self.method_error == "none":
                 delta_low = delta_high = None
             else:
@@ -206,8 +218,8 @@ class Plotter:
             if delta_low is not None and delta_high is not None:
                 plt.fill_between(
                     x_values,
-                    values_aggregated - delta_low,
-                    values_aggregated + delta_high,
+                    mean_values - delta_low,
+                    mean_values + delta_high,
                     alpha=0.2,
                 )
                 
@@ -229,7 +241,15 @@ class Plotter:
         plt.ylim(self.y_lim)
         plt.legend()
         plt.grid(visible=self.config["kwargs_grid"])
-        plt.title(f"{self.metric_repr} (aggregated by {self.grouping_fields_repr})")
+        if self.method_error == "none":
+            string_methods_agg_error = f"{self.method_aggregate}"
+        else:
+            string_methods_agg_error = f"{self.method_aggregate}, σ={self.method_error}"
+        if len(self.grouping_fields) == 0:
+            title = f"{self.metric_repr} ({string_methods_agg_error})"
+        else:
+            title = f"{self.metric_repr} (grouped by {self.grouping_fields_repr} : {string_methods_agg_error})"
+        plt.title(title)
 
         plt.show()
 
@@ -248,12 +268,8 @@ class Plotter:
                 self.runs.append(run_data)
         logger.info(f"Loaded {len(self.runs)} runs after filtering.")
 
-        logger.info(f"Grouping runs by {self.grouping_fields_repr}...")
+        # Group runs based on specified fields
         self.group_runs()
-        grouped_data_keys = list(self.grouped_data.keys())
-        logger.info(
-            f"Obtained {len(grouped_data_keys)} groups by grouping by {self.grouping_fields_repr} to obtain {grouped_data_keys if len(grouped_data_keys) < 10 else grouped_data_keys[:10] + ['...']}"
-        )
 
         self.plot_grouped_data()
         logger.info("Plotting complete.")
