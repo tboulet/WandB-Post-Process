@@ -1,8 +1,15 @@
+# ==== Paths and files ====
+
 # The path to the data that will be used for the plot (default: data/wandb_exports).
-runs_path: data/wandb_exports
+runs_path: data/debug
+
+# The name of the files that contain the scalars and the config
 file_scalars: scalars.csv
 file_config: config.yaml
 
+
+
+# ==== Data selection ====
 # The metric that will be used for the plot.
 metric: -metrics.n_agents + metrics.n_plants * 2 +10000
 
@@ -10,26 +17,28 @@ metric: -metrics.n_agents + metrics.n_plants * 2 +10000
 # This will be done with an 'eval' function, so you can use any python code.
 filters:
   - config.benchmark_name == 'bench16_fp_hc'
-  # - config.env.variability_fruits == [1, 1, 1, 1]
-  # - "'aaa' not in config"
+
 # The groupings that will be applied to the config for grouping the runs.
 # It is composed of a list of python expressions that will be evaluated.
 # The data will be grouped by the unique values of the tuple expression.
 grouping:
-  - "config.env.variability_fruits"
-  # - "config.seed"
+  - config.env.variability_fruits
 
 # The methods to use for aggregation (solid line) and error bars (shaded area).
 method_aggregate: median # among mean, median, min, max
-method_error: range # among std, sem, range, none
+method_error: percentile_0.75 # among std, sem, range, percentile_<q>, samples_<n_samples>, none, iqr
 
 # The maximum number of runs to load
-max_n_runs: 2
+max_n_runs: 10000
 
 # The x-axis (default: _step).
 x_axis: _step
 
-# ==== Plotting options ====
+
+
+# ==== Plotting interface options ====
+# Label to use if no grouping, as a function of run_name and config.
+label_individual: config.seed
 # The x-limits of the plot. By default it will be the min and max of the x-axis metric. 
 x_lim: null
 y_lim: null
@@ -42,6 +51,8 @@ kwargs_grid:
   visible: ${do_grid}
 
 
+
+# ==== Hydra config (do not change) ====
 
 # Defaults sub-configs and other Hydra config.
 defaults:
