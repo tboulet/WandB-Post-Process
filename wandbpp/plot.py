@@ -28,28 +28,40 @@ class Plotter:
         # Extract configuration parameters
         self.config = dict(config)
         self.runs_path = self.config.get("runs_path", "data/wandb_exports")
+        self.file_scalars: str = self.config.get("file_scalars", "scalars.csv")
+        self.file_config: str = self.config.get("file_config", "config.yaml")
         self.metric: str = self.config["metric"]
         self.filters: List[str] = self.config.get("filters", [])
         self.grouping_fields: List[str] = self.config.get("grouping", [])
         self.method_aggregate: str = self.config.get("method_aggregate", "mean")
         self.method_error: str = self.config.get("method_error", "std")
+        self.max_n_runs: int = self.config.get("max_n_runs", np.inf)
+        if self.max_n_runs in [None, "None", "null", "inf", "np.inf"]:
+            self.max_n_runs = np.inf
         self.x_axis: str = self.config.get("x_axis", "_step")
         self.x_lim = self.config.get("x_lim", None)
+        if self.x_lim is None:
+            self.x_lim = [None, None]
         self.y_lim = self.config.get("y_lim", None)
+        if self.y_lim is None:
+            self.y_lim = [None, None]
         self.do_try_include_y0: bool = self.config.get("do_try_include_y0", False)
         self.ratio_near_y0: str = self.config.get("ratio_near_y0", 0.5)
         self.do_grid: bool = self.config.get("do_grid", False)
 
-        # Define additional attributes
-        self.grouping_fields_repr = [field.split(".")[-1] for field in self.grouping_fields]
+        # Define metric and grouping fields representation
+        self.grouping_fields_repr = [
+            field.split(".")[-1] for field in self.grouping_fields
+        ]
         if len(self.grouping_fields_repr) == 0:
             self.grouping_fields_repr = ["All"]
         elif len(self.grouping_fields_repr) == 1:
             self.grouping_fields_repr = self.grouping_fields_repr[0]
         else:
             self.grouping_fields_repr = f"({', '.join(self.grouping_fields_repr)})"
-        
         self.metric_repr = self.metric.replace("metrics.", "")
+
+        # Define variables
         self.run_dirs: List[str] = []
         self.runs: List[Dict[str, Any]] = []
         self.grouped_data: Dict[Any, List[Dict[str, Any]]] = {}
@@ -63,8 +75,8 @@ class Plotter:
         Returns:
             Dict[str, Any]: Dictionary containing scalars DataFrame and run config.
         """
-        scalars_path = os.path.join(run_path, "scalars.csv")
-        config_path = os.path.join(run_path, "config.yaml")
+        scalars_path = os.path.join(run_path, self.file_scalars)
+        config_path = os.path.join(run_path, self.file_config)
 
         if not os.path.exists(scalars_path) or not os.path.exists(config_path):
             return None
@@ -95,42 +107,46 @@ class Plotter:
         return True
 
     def load_and_filter_run_data(self):
-        for run_dir in tqdm(self.run_dirs, desc="Filtering ..."):
+        n_run = 0
+        for run_dir in tqdm(self.run_dirs, desc="[wandbpp plot] Filtering ..."):
+            if n_run >= self.max_n_runs:
+                break
             run_data = self.load_run_data(run_dir)
             if run_data and self.apply_filters(run_data):
                 self.runs.append(run_data)
-        logger.info(f"Loaded {len(self.runs)} runs after filtering.")
+                n_run += 1
+        logger.info(f"[wandbpp plot] Loaded {len(self.runs)} runs after filtering.")
 
     def group_runs(self):
         """Groups runs based on specified grouping fields."""
         if len(self.grouping_fields) == 0:
             self.grouped_data = {("All",): self.runs}
             return
-        logger.info(f"Grouping runs by {self.grouping_fields_repr}...")
+        logger.info(f"[wandbpp plot] Grouping runs by {self.grouping_fields_repr}...")
         self.grouped_data = {}
         for run in self.runs:
             run_config = run["config"]
-            try:
-                group_key = [
-                    str(eval(field, {"config": run_config}))
-                    for field in self.grouping_fields
-                ]
-                if len(group_key) == 1:
-                    group_key = group_key[0]
-                else:
-                    group_key = ', '.join(group_key)
-            except Exception as e:
-                logger.warning(
-                    f"Could not evaluate grouping field '{self.grouping_fields}' - {e}"
-                )
-                group_key = tuple("Unknown" for _ in self.grouping_fields)
+            group_key = []
+            for field in self.grouping_fields:
+                try:
+                    group_key.append(str(eval(field, {"config": run_config})))
+                except Exception as e:
+                    logger.warning(
+                        f"[wandbpp plot warning] Field '{field}' could not be evaluated, assigning null instead. Error : {e}"
+                    )
+                    group_key.append("None")
+            if len(group_key) == 1:
+                group_key = group_key[0]
+            else:
+                group_key = ", ".join(group_key)
 
             if group_key not in self.grouped_data:
                 self.grouped_data[group_key] = []
             self.grouped_data[group_key].append(run)
         grouped_data_keys = list(self.grouped_data.keys())
+        lengths_groups = [len(v) for v in self.grouped_data.values()]
         logger.info(
-            f"Obtained {len(grouped_data_keys)} groups by grouping by {self.grouping_fields_repr} to obtain {grouped_data_keys if len(grouped_data_keys) < 10 else grouped_data_keys[:10] + ['...']}"
+            f"[wandbpp plot] Obtained {len(grouped_data_keys)} groups by grouping by {self.grouping_fields_repr} : {grouped_data_keys if len(grouped_data_keys) < 10 else grouped_data_keys[:10] + ['...']}, of size {lengths_groups if len(lengths_groups) < 10 else lengths_groups[:10] + ['...']} (average {np.mean(lengths_groups):.2f} ± {np.std(lengths_groups):.2f}, runs/group, min {np.min(lengths_groups)}, max {np.max(lengths_groups)})"
         )
 
     def try_include_y0(
@@ -149,12 +165,12 @@ class Plotter:
             return y_lim
         range_values = y_max - y_min
         if y_min <= y_max <= 0:  # negative values only
-            if range_values > self.ratio_near_y0 * -y_min:
+            if range_values > self.ratio_near_y0 * -y_min and y_lim[1] is None:
                 return [y_min, 0]
             else:
                 return y_lim
         elif 0 <= y_min <= y_max:  # positive values only
-            if range_values > self.ratio_near_y0 * y_max:
+            if range_values > self.ratio_near_y0 * y_max and y_lim[0] is None:
                 return [0, y_max]
             else:
                 return y_lim
@@ -177,11 +193,11 @@ class Plotter:
 
         for group_key, runs in self.grouped_data.items():
             # Get the merged DataFrame for all runs in the group
-            list_group_dfs : List[pd.DataFrame] = []
+            list_group_dfs: List[pd.DataFrame] = []
             df_x_values = pd.DataFrame()
             max_t = -np.inf
             for run in runs:
-                df : pd.DataFrame = run["scalars"]
+                df: pd.DataFrame = run["scalars"]
                 if self.x_axis in df.columns:
                     try:
                         metric_values = eval(self.metric, {"metrics": df, "np": np})
@@ -193,15 +209,17 @@ class Plotter:
                             df_x_values = df[[self.x_axis]]
                     except Exception as e:
                         logger.warning(
-                            f"Could not evaluate metric expression '{self.metric}' - {e}"
+                            f"[wandbpp plot warning] Could not evaluate metric expression '{self.metric}' - {e}"
                         )
                         continue
                 else:
                     logger.warning(
-                        f"Could not find x-axis column '{self.x_axis}' in DataFrame for run {run['config']['name']}"
+                        f"[wandbpp plot warning] Could not find x-axis column '{self.x_axis}' in DataFrame for run {run['config']['name']}"
                     )
             if not list_group_dfs:  # Skip group if no valid data
-                logger.warning(f"Skipping group {group_key} due to missing data.")
+                logger.warning(
+                    f"[wandbpp plot warning] Skipping group {group_key} due to missing data."
+                )
                 continue
             merged_df = pd.concat(list_group_dfs, axis=1, join="outer")
             x_values = df_x_values[self.x_axis]
@@ -250,6 +268,12 @@ class Plotter:
                 self.y_min = min(values_aggregated.min(), self.y_min)
                 self.y_max = max(values_aggregated.max(), self.y_max)
 
+        # Don't plot if no data
+        if self.y_min == np.inf or self.y_max == -np.inf:
+            logger.warning("[wandbpp plot warning] No data to plot.")
+            return
+
+        # Plot settings
         plt.xlabel("Steps")
         plt.ylabel(self.metric_repr)
         plt.xlim(self.x_lim)
@@ -279,20 +303,28 @@ class Plotter:
             for d in os.listdir(self.runs_path)
             if os.path.isdir(os.path.join(self.runs_path, d))
         ]
-        logger.info(f"Found {len(self.run_dirs)} runs in {self.runs_path}.")
+        logger.info(
+            f"[wandbpp plot] Found {len(self.run_dirs)} runs in {self.runs_path}."
+        )
 
         # Load and filter run data
         self.load_and_filter_run_data()
         if len(self.runs) == 0:
-            logger.warning("No runs to plot.")
+            logger.warning("[wandbpp plot warning] No runs to plot.")
             return
-        
+
         # Group runs based on specified fields
         self.group_runs()
+        if sum(len(v) for v in self.grouped_data.values()) == 0:
+            raise ValueError(
+                "[wandbpp plot] Run were loaded but no runs were grouped. This should not happen."
+            )
+            logger.warning("[wandbpp plot] No groups to plot.")
+            return
 
         # Plot grouped data
         self.plot_grouped_data()
-        logger.info("Plotting complete.")
+        logger.info("[wandbpp plot] Plotting complete.")
 
 
 @hydra.main(config_path="../configs_plot", config_name="config_default.yaml")

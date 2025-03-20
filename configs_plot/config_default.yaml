@@ -1,5 +1,7 @@
 # The path to the data that will be used for the plot (default: data/wandb_exports).
 runs_path: data/wandb_exports
+file_scalars: scalars.csv
+file_config: config.yaml
 
 # The metric that will be used for the plot.
 metric: -metrics.n_agents + metrics.n_plants * 2 +10000
@@ -7,17 +9,22 @@ metric: -metrics.n_agents + metrics.n_plants * 2 +10000
 # The filters that will be applied to the config for accepting a run.
 # This will be done with an 'eval' function, so you can use any python code.
 filters:
-  - "config.benchmark_name == 'bench16_fp_hc'"
+  - config.benchmark_name == 'bench16_fp_hc'
+  # - config.env.variability_fruits == [1, 1, 1, 1]
+  # - "'aaa' not in config"
 # The groupings that will be applied to the config for grouping the runs.
 # It is composed of a list of python expressions that will be evaluated.
 # The data will be grouped by the unique values of the tuple expression.
 grouping:
   - "config.env.variability_fruits"
-  - "config.benchmarke_name"
+  # - "config.seed"
 
 # The methods to use for aggregation (solid line) and error bars (shaded area).
 method_aggregate: median # among mean, median, min, max
 method_error: range # among std, sem, range, none
+
+# The maximum number of runs to load
+max_n_runs: 2
 
 # The x-axis (default: _step).
 x_axis: _step
