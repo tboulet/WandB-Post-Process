@@ -35,7 +35,13 @@ class Plotter:
         if self.grouping_fields is None:
             self.grouping_fields = []
         self.method_aggregate: str = self.config.get("method_aggregate", "mean")
+        assert self.method_aggregate in ["mean", "median", "max", "min"], f"Invalid method_aggregate: {self.method_aggregate}"
         self.method_error: str = self.config.get("method_error", "std")
+        assert (
+            self.method_error in ["std", "sem", "range", "iqr", "none"]
+            or self.method_error.startswith("percentile")
+            or self.method_error.startswith("samples")
+        ), f"Invalid method_error: {self.method_error}"
         self.max_n_runs: int = self.config.get("max_n_runs", np.inf)
         if self.max_n_runs in [None, "None", "null", "inf", "np.inf"]:
             self.max_n_runs = np.inf
@@ -68,9 +74,13 @@ class Plotter:
         self.run_dirs: List[str] = []
         self.runs: List[Dict[str, Any]] = []
         self.grouped_data: Dict[Any, List[Dict[str, Any]]] = {}
-        
+
         # Set logger
-        basicConfig(level=logging.INFO, format="[WandbPP plot] %(asctime)s - %(levelname)s - %(message)s", force=True)
+        basicConfig(
+            level=logging.INFO,
+            format="[WandbPP plot] %(asctime)s - %(levelname)s - %(message)s",
+            force=True,
+        )
 
     def load_run_data(self, run_path: str) -> Dict[str, Any]:
         """Loads scalar metrics and config from a run directory.
@@ -79,7 +89,10 @@ class Plotter:
             run_path (str): Path to the run directory.
 
         Returns:
-            Dict[str, Any]: Dictionary containing scalars DataFrame and run config.
+            Dict[str, Any]: Dictionary containing:
+                - scalars: DataFrame containing scalar metrics.
+                - config: OmegaConf object containing the run configuration.
+                - name: Name of the run.
         """
         # Load scalars
         scalars_path = os.path.join(run_path, self.file_scalars)
@@ -125,6 +138,7 @@ class Plotter:
         return True
 
     def load_and_filter_run_data(self):
+        """Loads run data and applies filters to select runs for plotting."""
         n_run = 0
         for run_dir in tqdm(self.run_dirs, desc="[WandbPP plot] Filtering ..."):
             if n_run >= self.max_n_runs:
@@ -359,9 +373,7 @@ class Plotter:
             for d in os.listdir(self.runs_path)
             if os.path.isdir(os.path.join(self.runs_path, d))
         ]
-        logger.info(
-            f"Found {len(self.run_dirs)} runs in {self.runs_path}."
-        )
+        logger.info(f"Found {len(self.run_dirs)} runs in {self.runs_path}.")
 
         # Load and filter run data
         self.load_and_filter_run_data()
