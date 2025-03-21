@@ -1,6 +1,7 @@
 import logging
 from logging import basicConfig, getLogger
 import re
+import omegaconf
 from tqdm import tqdm
 import yaml
 import os
@@ -28,25 +29,47 @@ class Plotter:
         self.file_scalars: str = self.config.get("file_scalars", "scalars.csv")
         self.file_config: str = self.config.get("file_config", "config.yaml")
         self.metric: str = self.config["metric"]
+        self.metric_repr = self.metric.replace("metrics.", "")
         self.filters: List[str] = self.config.get("filters", [])
-        if self.filters is None:
-            self.filters = []
         self.grouping_fields: List[str] = self.config.get("grouping", [])
-        if self.grouping_fields is None:
-            self.grouping_fields = []
+        self.grouping_fields_repr = [
+            str(field).split(".")[-1] for field in self.grouping_fields
+        ]
+        if len(self.grouping_fields) == 0:
+            self.grouping_fields_repr = ["None"]
+        elif len(self.grouping_fields) == 1:
+            self.grouping_fields_repr = self.grouping_fields[0].split(".")[-1]
+        else:
+            self.grouping_fields_repr = [
+                str(field).split(".")[-1] for field in self.grouping_fields
+            ]
+            self.grouping_fields_repr = ", ".join(self.grouping_fields_repr)
+            self.grouping_fields_repr = f"({self.grouping_fields_repr})"
+        # Plotting options
         self.method_aggregate: str = self.config.get("method_aggregate", "mean")
-        assert self.method_aggregate in ["mean", "median", "max", "min"], f"Invalid method_aggregate: {self.method_aggregate}"
+        assert self.method_aggregate in [
+            "mean",
+            "median",
+            "max",
+            "min",
+        ], f"Invalid method_aggregate: {self.method_aggregate}"
         self.method_error: str = self.config.get("method_error", "std")
-        assert (
-            self.method_error in ["std", "sem", "range", "iqr", "none"]
-            or self.method_error.startswith("percentile")
-            or self.method_error.startswith("samples")
+        assert self.method_error in [
+            "std",
+            "sem",
+            "range",
+            "iqr",
+            "none",
+        ] or self.method_error.startswith(
+            "percentile"
         ), f"Invalid method_error: {self.method_error}"
+        self.n_samples_shown: int = self.config.get("n_samples_shown", 0)
         self.max_n_runs: int = self.config.get("max_n_runs", np.inf)
         if self.max_n_runs in [None, "None", "null", "inf", "np.inf"]:
             self.max_n_runs = np.inf
         # Plotting interface options
         self.label_individual: str = self.config.get("label_individual", "run_name")
+        self.label_group: str = self.config.get("label_group", "group_key")
         self.x_axis: str = self.config.get("x_axis", "_step")
         self.x_lim = self.config.get("x_lim", None)
         if self.x_lim is None:
@@ -56,23 +79,17 @@ class Plotter:
             self.y_lim = [None, None]
         self.do_try_include_y0: bool = self.config.get("do_try_include_y0", False)
         self.ratio_near_y0: str = self.config.get("ratio_near_y0", 0.5)
-        self.do_grid: bool = self.config.get("do_grid", False)
-
-        # Define metric and grouping fields representation
-        self.grouping_fields_repr = [
-            str(field).split(".")[-1] for field in self.grouping_fields
-        ]
-        if len(self.grouping_fields_repr) == 0:
-            self.grouping_fields_repr = ["All"]
-        elif len(self.grouping_fields_repr) == 1:
-            self.grouping_fields_repr = self.grouping_fields_repr[0]
-        else:
-            self.grouping_fields_repr = f"({', '.join(self.grouping_fields_repr)})"
-        self.metric_repr = self.metric.replace("metrics.", "")
+        self.kwargs_grid: Dict[str, Any] = self.config.get("kwargs_grid", {})
+        self.alpha_shaded: float = self.config.get("alpha_shaded", 0.2)
+        self.max_legend_length: int = self.config.get("max_legend_length", 10)
+        self.groups_plot_kwargs: List[Dict[str, Any]] = self.config.get(
+            "groups_plot_kwargs", {}
+        )
+        self.default_plot_kwargs: Dict = self.config.get("default_plot_kwargs", {})
 
         # Define variables
         self.run_dirs: List[str] = []
-        self.runs: List[Dict[str, Any]] = []
+        self.runs_data: List[Dict[str, Any]] = []
         self.grouped_data: Dict[Any, List[Dict[str, Any]]] = {}
 
         # Set logger
@@ -145,40 +162,75 @@ class Plotter:
                 break
             run_data = self.load_run_data(run_dir)
             if run_data and self.apply_filters(run_data):
-                self.runs.append(run_data)
+                self.runs_data.append(run_data)
                 n_run += 1
-        logger.info(f"Loaded {len(self.runs)} runs after filtering.")
+        logger.info(f"Loaded {len(self.runs_data)} runs after filtering.")
 
     def group_runs(self):
         """Groups runs based on specified grouping fields."""
+        # If no grouping fields, group all runs together
         if len(self.grouping_fields) == 0:
-            self.grouped_data = {("All",): self.runs}
+            self.grouped_data = self.grouped_data = {
+                run["name"]: [run] for run in self.runs_data
+            }
+            self.grouped_plot_kwargs: Dict[Any, Dict[str, Any]] = {}
             return
+        # Initialize mappings from field to plot kwargs
+        self.field_to_plot_kwargs: Dict[str, Dict[str, Any]] = {}
+        for idx, field in enumerate(self.grouping_fields):
+            if idx >= len(self.groups_plot_kwargs):
+                break  # don't try to get plot kwargs if not enough are provided
+            self.field_to_plot_kwargs[field] = omegaconf.OmegaConf.to_container(
+                self.groups_plot_kwargs[idx], resolve=True
+            )
+            self.field_to_plot_kwargs[field]["values"] = []
+        # Initialize mappings from group key to runs and plot kwargs
         logger.info(f"Grouping runs by {self.grouping_fields_repr}...")
-        self.grouped_data = {}
-        for run in self.runs:
-            run_config = run["config"]
-            run_name = run["name"]
+        self.grouped_data: Dict[Any, List[Dict[str, Any]]] = {}
+        self.grouped_plot_kwargs: Dict[Any, Dict[str, Any]] = {}
+        # Iterate on the runs data
+        for run_data in self.runs_data:
+            run_config = run_data["config"]
+            run_name = run_data["name"]
+            # Construct group key
             group_key = []
             for field in self.grouping_fields:
                 try:
-                    if field is None:
+                    if field is None:  # null field means a dummy group
                         group_key.append("None")
                     else:
-                        group_key.append(str(eval(field, {"config": run_config})))
+                        value = str(eval(field, {"config": run_config}))
                 except Exception as e:
                     logger.warning(
                         f"Field '{field}' could not be evaluated for run {run_name}, assigning 'None' instead - {e}"
                     )
-                    group_key.append("None")
-            if len(group_key) == 1:
-                group_key = group_key[0]
-            else:
-                group_key = ", ".join(group_key)
-
+                    value = "None"  # assign 'None' if field evaluation fails
+                group_key.append(value)
+            group_key = tuple(group_key)  # use tuple for hashability
+            # Add eventually new value for field to plot kwargs
+            for field, value in zip(self.grouping_fields, group_key):
+                if (
+                    field in self.field_to_plot_kwargs
+                    and value not in self.field_to_plot_kwargs[field]["values"]
+                ):
+                    self.field_to_plot_kwargs[field]["values"].append(value)
+            # If new group key, initialize list of runs as empty, and extract plot kwargs from field_to_plot_kwargs
             if group_key not in self.grouped_data:
                 self.grouped_data[group_key] = []
-            self.grouped_data[group_key].append(run)
+                plot_kwargs = {}
+                for field, value in zip(self.grouping_fields, group_key):
+                    if field in self.field_to_plot_kwargs:
+                        key = self.field_to_plot_kwargs[field]["key"]
+                        values = self.field_to_plot_kwargs[field]["values"]
+                        idx = values.index(value) % len(
+                            self.field_to_plot_kwargs[field]["args"]
+                        )
+                        arg = self.field_to_plot_kwargs[field]["args"][idx]
+                        plot_kwargs[key] = arg
+                self.grouped_plot_kwargs[group_key] = plot_kwargs
+            # Append run data to group
+            self.grouped_data[group_key].append(run_data)
+
         grouped_data_keys = list(self.grouped_data.keys())
         lengths_groups = [len(v) for v in self.grouped_data.values()]
         logger.info(
@@ -239,8 +291,13 @@ class Plotter:
             label_fn = lambda group_key, config: self.method_aggregate
         else:
             # Grouping with multiple groups, use the group key as the label
-            label_fn = lambda group_key, config: group_key
+            def label_fn(group_key, config):
+                if len(group_key) == 1:
+                    return group_key[0]
+                else:
+                    return ", ".join(str(k) for k in group_key)
 
+        n_plot = 0
         for group_key, runs_data in self.grouped_data.items():
             # Get the merged DataFrame for all runs in the group
             list_group_dfs: List[pd.DataFrame] = []
@@ -271,6 +328,11 @@ class Plotter:
                 continue
             merged_df = pd.concat(list_group_dfs, axis=1, join="outer")
             x_values = df_x_values[self.x_axis]
+
+            # Get plot kwargs
+            plot_kwargs = self.default_plot_kwargs
+            if group_key in self.grouped_plot_kwargs:
+                plot_kwargs.update(self.grouped_plot_kwargs[group_key])
 
             # Compute aggregated values
             mean_values = merged_df.mean(axis=1, skipna=True)
@@ -303,14 +365,6 @@ class Plotter:
                 q = float(self.method_error.split("_")[-1])
                 delta_low = mean_values - merged_df.quantile(q / 2, axis=1)
                 delta_high = merged_df.quantile(1 - q / 2, axis=1) - mean_values
-            elif self.method_error.startswith("samples"):
-                n = merged_df.shape[1]
-                n_samples = int(self.method_error.split("_")[-1])
-                sampled_indices = np.random.choice(
-                    np.arange(n), size=min(n_samples, n), replace=False
-                )
-                for i in sampled_indices:
-                    plt.plot(x_values, merged_df.iloc[:, i], alpha=0.2)
             elif self.method_error == "none":
                 pass
             else:
@@ -320,14 +374,34 @@ class Plotter:
             plt.plot(
                 x_values,
                 values_aggregated,
-                label=str(label_fn(group_key=group_key, config=runs_data[0]["config"])),
+                label=(
+                    str(label_fn(group_key=group_key, config=runs_data[0]["config"]))
+                    if n_plot < self.max_legend_length
+                    else None
+                ),
+                **plot_kwargs,
             )
+            n_plot += 1
             if delta_low is not None and delta_high is not None:
                 plt.fill_between(
                     x_values,
                     mean_values - delta_low,
                     mean_values + delta_high,
-                    alpha=0.2,
+                    alpha=self.alpha_shaded,
+                    **plot_kwargs,
+                )
+
+            # Plot samples
+            n = merged_df.shape[1]
+            sampled_indices = np.random.choice(
+                np.arange(n), size=min(self.n_samples_shown, n), replace=False
+            )
+            for i in sampled_indices:
+                plt.plot(
+                    x_values,
+                    merged_df.iloc[:, i],
+                    alpha=self.alpha_shaded,
+                    **plot_kwargs,
                 )
 
             # Update y_min and y_max based on the group values
@@ -352,8 +426,16 @@ class Plotter:
                 self.y_lim, y_min=self.y_min, y_max=self.y_max
             )
         plt.ylim(self.y_lim)
-        plt.legend()
-        plt.grid(visible=self.config["kwargs_grid"])
+        if len(self.grouping_fields) == 0:
+            title_legend = None
+        elif n_plot > self.max_legend_length:
+            title_legend = (
+                f"Groups (first {self.max_legend_length} shown / {n_plot} total)"
+            )
+        else:
+            title_legend = "Groups"
+        plt.legend(loc="best", fontsize="small", title=title_legend)
+        plt.grid(**self.kwargs_grid)
         if self.method_error == "none":
             string_methods_agg_error = f"{self.method_aggregate}"
         else:
@@ -377,15 +459,15 @@ class Plotter:
 
         # Load and filter run data
         self.load_and_filter_run_data()
-        if len(self.runs) == 0:
+        if len(self.runs_data) == 0:
             logger.error("No runs to plot.")
             return
 
         # Group runs based on specified fields
-        if len(self.grouping_fields) > 0:
+        if len(self.grouping_fields) > 0 or True:
             self.group_runs()
         else:
-            self.grouped_data = {run["name"]: [run] for run in self.runs}
+            self.grouped_data = {run["name"]: [run] for run in self.runs_data}
         if sum(len(v) for v in self.grouped_data.values()) == 0:
             raise ValueError(
                 "Run were loaded but no runs were grouped. This should not happen."

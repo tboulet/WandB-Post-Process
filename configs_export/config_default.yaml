@@ -2,7 +2,7 @@ project: timotheboulet/EcoJAX
 filters:
   "summary_metrics._step":
     "$gte": 50000
-  "config.benchmark_name": bench16_fp_hc
+  "config.benchmark_name": bench17_fp_hc
 samples: 10000
 min_n_metrics: 10
 
