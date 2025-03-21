@@ -79,7 +79,6 @@ class Plotter:
             self.y_lim = [None, None]
         self.do_try_include_y0: bool = self.config.get("do_try_include_y0", False)
         self.ratio_near_y0: str = self.config.get("ratio_near_y0", 0.5)
-        self.kwargs_grid: Dict[str, Any] = self.config.get("kwargs_grid", {})
         self.alpha_shaded: float = self.config.get("alpha_shaded", 0.2)
         self.max_legend_length: int = self.config.get("max_legend_length", 10)
         self.groups_plot_kwargs: List[Dict[str, Any]] = self.config.get(
@@ -417,15 +416,17 @@ class Plotter:
             logger.error("No data to plot.")
             return
 
-        # Plot settings
+        # ======= Plot settings =======
         plt.xlabel("Steps")
         plt.ylabel(self.metric_repr)
+        # Set x and y limits
         plt.xlim(self.x_lim)
         if self.do_try_include_y0:
             self.y_lim = self.try_include_y0(
                 self.y_lim, y_min=self.y_min, y_max=self.y_max
             )
         plt.ylim(self.y_lim)
+        # Legend and grid
         if len(self.grouping_fields) == 0:
             title_legend = None
         elif n_plot > self.max_legend_length:
@@ -434,8 +435,9 @@ class Plotter:
             )
         else:
             title_legend = "Groups"
-        plt.legend(loc="best", fontsize="small", title=title_legend)
-        plt.grid(**self.kwargs_grid)
+        plt.legend(title=title_legend, **self.config.get("kwargs_legend", {}))
+        plt.grid(**self.config.get("kwargs_grid", {}))
+        # Title
         if self.method_error == "none":
             string_methods_agg_error = f"{self.method_aggregate}"
         else:
@@ -444,8 +446,9 @@ class Plotter:
             title = f"{self.metric_repr} ({string_methods_agg_error})"
         else:
             title = f"{self.metric_repr} (grouped by {self.grouping_fields_repr} : {string_methods_agg_error})"
-        plt.title(title)
+        plt.title(title, **self.config.get("kwargs_title", {}))
 
+        # Show plot
         plt.show()
 
     def run(self):

@@ -10,6 +10,7 @@ file_config: config.yaml
 
 
 # ==== Data selection ====
+
 # The metric that will be used for the plot.
 metric: -metrics.n_agents + metrics.n_plants * 2 +10000
 
@@ -39,7 +40,8 @@ x_axis: _step
 
 
 # ==== Plotting interface options ====
-# Label to use if no grouping, as a function of run_name and config.
+
+# Label to use if no grouping, as a function of run_name and config. If null, will use the run_name.
 label_individual: config.seed
 # Label to use if grouping, as a function of config. If null, will use the grouping values.
 label_group: config.seed
@@ -49,10 +51,14 @@ y_lim: null
 # Whether to try adding y=0 to the limits if 0 is not too far away from the data (nearest than the data range).
 do_try_include_y0: True
 ratio_near_y0: 0.5 # The ratio of the data range that should be considered as "near" 0.
-# Whether to do grid on the plot and the grid configuration.
-do_grid: True
+# Various plt kwargs
 kwargs_grid:
-  visible: ${do_grid}
+  visible: True
+kwargs_legend:
+  loc: best
+  fontsize: small
+kwargs_title:
+  fontsize: large
 # The alpha of the shaded area.
 alpha_shaded: 0.1
 # The maximum legend length. If the legend is longer, it will be cut.
@@ -67,6 +73,19 @@ groups_plot_kwargs:
 default_plot_kwargs: 
   color : 'black'
   linestyle: '-'
+
+
+
+# ==== Show/save options ====
+
+# Whether to show the plot.
+do_show: True
+# Whether to save the plot.
+do_save: True
+# The path where to save the plot, as a function of the metric representation (metric.x -> x).
+path_save: "f'plots/plot_{metric}.png'"
+
+
 
 # ==== Hydra config (do not change) ====
 
