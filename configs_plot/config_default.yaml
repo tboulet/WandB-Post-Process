@@ -12,8 +12,11 @@ file_config: config.yaml
 # ==== Data selection ====
 
 # The metric that will be used for the plot.
-metric: -metrics.n_agents + metrics.n_plants * 2 +10000
-
+metric: 
+metrics:
+  - metrics.n_agents + metrics.n_plants * 2
+  - metrics.n_agents + metrics.n_plants * 2 + 100
+  
 # The filters that will be applied to the config for accepting a run.
 # This will be done with an 'eval' function, so you can use any python code.
 # filters:
@@ -23,16 +26,16 @@ metric: -metrics.n_agents + metrics.n_plants * 2 +10000
 # It is composed of a list of python expressions that will be evaluated.
 # The data will be grouped by the unique values of the tuple expression.
 grouping:
-  - config.benchmark_name
-  # - config.env.variability_fruits
+  # - config.benchmark_name
+  - config.env.variability_fruits
 
-# The methods to use for aggregation (solid line) and error bars (shaded area).
+# The methods to use for aggregation (solid line), error bars (shaded area) and samples (shaded lines)
 method_aggregate: median # among mean, median, min, max
 method_error: range # among std, sem, range, iqr, percentile_<q>, none
-n_samples_shown: 0
+n_samples_shown: 0 # the number of run sampled from each group that will be shown if shaded lines
 
 # The maximum number of runs to load
-max_n_runs: 2555
+max_n_runs: 10
 
 # The x-axis (default: _step).
 x_axis: _step
@@ -41,10 +44,12 @@ x_axis: _step
 
 # ==== Plotting interface options ====
 
-# Label to use if no grouping, as a function of run_name and config. If null, will use the run_name.
+# Label to use if no grouping, as a function of "run_name" and "config". If null, will use the run_name.
 label_individual: config.seed
-# Label to use if grouping, as a function of config. If null, will use the grouping values.
-label_group: config.seed
+# Label to use if grouping, as a function of "group_key" and "config". If null or group_key, will use the grouping values pretty representation.
+label_group: group_key
+# Title, as a function of "metric" the metric pretty representation (metric.x -> x) and of "grouping_fields_repr". If null, will use f"{metric} (grouped by {<pretty representation of the grouping>} : method_aggregate, σ={method_error})"
+title: null
 # The x-limits of the plot. By default it will be the min and max of the x-axis metric. 
 x_lim: null
 y_lim: null
@@ -73,8 +78,10 @@ groups_plot_kwargs:
 default_plot_kwargs: 
   color : 'black'
   linestyle: '-'
-
-
+# Whether to show the plot one by one (in case of many metrics)
+do_show_one_by_one: False
+# Figure size
+figsize: [10, 6]
 
 # ==== Show/save options ====
 
@@ -82,8 +89,16 @@ default_plot_kwargs:
 do_show: True
 # Whether to save the plot.
 do_save: True
-# The path where to save the plot, as a function of the metric representation (metric.x -> x).
+# The path where to save the plot, as a function of "metric" the metric pretty representation file-compatible (metric.x -> x) and "date" the date of the run.
+# If null, will use f'plots/plot_{metric}_{date}.png'. If not file-compatible, will be replaced by '_'.
 path_save: "f'plots/plot_{metric}.png'"
+# plt.savefig kwargs
+kwargs_savefig:
+  dpi: 300
+  bbox_inches: tight
+  pad_inches: 0.1
+  transparent: False
+  format: png 
 
 
 
