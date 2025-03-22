@@ -12,21 +12,26 @@ file_config: config.yaml
 # ==== Data selection ====
 
 # The metric that will be used for the plot.
-metric: 
-metrics:
-  - metrics.n_agents + metrics.n_plants * 2
+expression: metrics.n_agents + metrics.n_plants * 2
+expressions:
   - metrics.n_agents + metrics.n_plants * 2 + 100
-  
+
+# Whether to show all metrics in the same plot (True) or one by one (False).
+# If True, data will be grouped by the metric names first (and then by the other grouping fields).
+# If False, several plots will be made for each metric.
+do_group_metrics: True
+
 # The filters that will be applied to the config for accepting a run.
 # This will be done with an 'eval' function, so you can use any python code.
-# filters:
-  # - config.benchmark_name == 'bench16_fp_hc'
+# filters_expressions:
+#   - config.benchmark_name == 'bench16_fp_hc'
 
 # The groupings that will be applied to the config for grouping the runs.
 # It is composed of a list of python expressions that will be evaluated.
 # The data will be grouped by the unique values of the tuple expression.
-grouping:
+groups_expressions:
   # - config.benchmark_name
+  - expression
   - config.env.variability_fruits
 
 # The methods to use for aggregation (solid line), error bars (shaded area) and samples (shaded lines)
@@ -34,8 +39,10 @@ method_aggregate: median # among mean, median, min, max
 method_error: range # among std, sem, range, iqr, percentile_<q>, none
 n_samples_shown: 0 # the number of run sampled from each group that will be shown if shaded lines
 
-# The maximum number of runs to load
-max_n_runs: 10
+# The maximum number of runs to show in the plot
+max_n_runs: 100
+# The maximum number of curves to show in the plot
+max_n_curves: 100
 
 # The x-axis (default: _step).
 x_axis: _step
@@ -44,18 +51,20 @@ x_axis: _step
 
 # ==== Plotting interface options ====
 
-# Label to use if no grouping, as a function of "run_name" and "config". If null, will use the run_name.
-label_individual: config.seed
-# Label to use if grouping, as a function of "group_key" and "config". If null or group_key, will use the grouping values pretty representation.
-label_group: group_key
-# Title, as a function of "metric" the metric pretty representation (metric.x -> x) and of "grouping_fields_repr". If null, will use f"{metric} (grouped by {<pretty representation of the grouping>} : method_aggregate, σ={method_error})"
-title: null
+# Curve label function, as a function of "config", "group_key", "run_name" and helper repr functions.
+label_expression: join(*group_key)
+
+# Title, as a function of "expressions"=drop_prefix(*join(*expressions)) and "groups"=drop_prefix(join_par(*self.groups_expressions)).
+# If null, will be an hardcoded pretty representation of the expressions.
+title_expression: null
+
 # The x-limits of the plot. By default it will be the min and max of the x-axis metric. 
 x_lim: null
 y_lim: null
 # Whether to try adding y=0 to the limits if 0 is not too far away from the data (nearest than the data range).
 do_try_include_y0: True
 ratio_near_y0: 0.5 # The ratio of the data range that should be considered as "near" 0.
+
 # Various plt kwargs
 kwargs_grid:
   visible: True
@@ -64,24 +73,23 @@ kwargs_legend:
   fontsize: small
 kwargs_title:
   fontsize: large
+default_plot_kwargs: 
+  color : 'black'
+  linestyle: '-'
 # The alpha of the shaded area.
 alpha_shaded: 0.1
 # The maximum legend length. If the legend is longer, it will be cut.
-max_legend_length: 522
+max_legend_length: 20
+# Figure size
+figsize: [10, 6]
 # The kwargs for the plot function that will be used for grouping.
 groups_plot_kwargs:
   - key: linestyle
     args: ['-', '--', '-.', ':']
   - key: color
     args: ['green', 'brown', 'blue', 'orange', 'red', 'brown', 'pink', 'gray', 'olive', 'cyan']
-# Which color to use by default (if not specified in the groups_plot_kwargs)
-default_plot_kwargs: 
-  color : 'black'
-  linestyle: '-'
-# Whether to show the plot one by one (in case of many metrics)
-do_show_one_by_one: False
-# Figure size
-figsize: [10, 6]
+
+
 
 # ==== Show/save options ====
 
@@ -100,6 +108,9 @@ kwargs_savefig:
   transparent: False
   format: png 
 
+
+
+# ==== Other options ====
 
 
 # ==== Hydra config (do not change) ====

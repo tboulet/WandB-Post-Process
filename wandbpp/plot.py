@@ -1,6 +1,5 @@
 import datetime
 import logging
-from logging import basicConfig, getLogger
 import re
 import omegaconf
 from tqdm import tqdm
@@ -11,13 +10,63 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from omegaconf import DictConfig, OmegaConf
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Set, Tuple
+import enum
 
-# Set up logger
-logger = logging.getLogger(__name__)
+KWARGS_IMPORTS = {"np": np, "pd": pd, "re": re}
+
+# Representation functions
+join = lambda *args: ", ".join(args)
+join_par = lambda *args: f"({join(*args)})" if len(args) > 1 else join(*args)
+drop_prefix = lambda s: re.sub(r"\b\w+\.(\w+)\b", r"\1", s)
 
 
-class Plotter:
+class EvalArgs(enum.Enum):
+    """Enum class for the arguments that can be passed to the eval function."""
+
+    CONFIG = "config"
+    METRIC = "metric"
+    X_VALUES = "x_values"
+    METRICS = "metrics"
+    EXPRESSION = "expression"
+    RUN_NAME = "run_name"
+    GROUP_KEY = "group_key"
+    JOIN_FN = "join"
+    JOIN_PAR_FN = "join_par"
+    DROP_PREFIX_FN = "drop_prefix"
+
+
+class RunMetricData:
+    """This class contains the data of one particular metric for one particular run."""
+
+    def __init__(
+        self,
+        run_name: str,
+        metric_expression: str,
+        x_values: np.ndarray,
+        metric_values: np.ndarray,
+        config: Dict[str, Any],
+    ):
+        """Initializes the RunMetricData class.
+
+        Args:
+            run_name (str): the name of the run.
+            metric_name (str): the name of the metric considered.
+            x_values (pd.Series): the x values of the run.
+            metric_values (pd.Series): the values of the metric considered.
+            config (Dict[str, Any]): the configuration of the run.
+        """
+        self.run_name = run_name
+        self.metric_name = metric_expression
+        self.x_values = x_values
+        self.metric_values = metric_values
+        self.config = config
+
+
+class WandbppPlotter:
+
+    default_label_expression = f"{EvalArgs.JOIN_FN.value}(*{EvalArgs.GROUP_KEY.value})"
+
     def __init__(self, config: DictConfig):
         """Initializes the Plotter class with configuration parameters.
 
@@ -25,7 +74,8 @@ class Plotter:
             config (DictConfig): Hydra configuration object.
         """
         # Set logger
-        basicConfig(
+        self.logger = logging.getLogger(__name__)
+        logging.basicConfig(
             level=logging.INFO,
             format="[WandbPP plot] %(asctime)s - %(levelname)s - %(message)s",
             force=True,
@@ -37,32 +87,32 @@ class Plotter:
         self.runs_path = self.config.get("runs_path", "data/wandb_exports")
         self.file_scalars: str = self.config.get("file_scalars", "scalars.csv")
         self.file_config: str = self.config.get("file_config", "config.yaml")
-        metric: str = self.config.get("metric", None)
-        list_metrics: List[str] = self.config.get("metrics", None)
-        self.metrics: List[str] = []
-        if metric is not None:
-            self.metrics.append(metric)
-        if list_metrics is not None:
-            self.metrics.extend(list_metrics)
+        expression: str = self.config.get("expression", None)
+        list_expressions: List[str] = self.config.get("expressions", None)
+        self.expressions: List[str] = []
+        if expression is not None:
+            self.expressions.append(expression)
+        if list_expressions is not None:
+            self.expressions.extend(list_expressions)
         assert (
-            len(self.metrics) > 0
+            len(self.expressions) > 0
         ), "No metric(s) specified. You must specify your metrics either in the config in 'metric' or 'metrics' (list)"
-        self.filters: List[str] = self.config.get("filters", [])
-        self.grouping_fields: List[str] = self.config.get("grouping", [])
-        self.grouping_fields_repr = [
-            str(field).split(".")[-1] for field in self.grouping_fields
-        ]
-        if len(self.grouping_fields) == 0:
-            self.grouping_fields_repr = ["None"]
-        elif len(self.grouping_fields) == 1:
-            self.grouping_fields_repr = self.grouping_fields[0].split(".")[-1]
-        else:
-            self.grouping_fields_repr = [
-                str(field).split(".")[-1] for field in self.grouping_fields
-            ]
-            self.grouping_fields_repr = ", ".join(self.grouping_fields_repr)
-            self.grouping_fields_repr = f"({self.grouping_fields_repr})"
-        # Plotting options
+        self.do_group_metrics: bool = self.config.get("do_group_metrics", False)
+        self.filters_expressions: List[str] = self.config.get("filters_expressions", [])
+        self.filters_args: Set[str] = {
+            eval_arg
+            for eval_arg in EvalArgs
+            if eval_arg.value in " ".join(self.filters_expressions)
+        }
+        self.groups_expressions: List[str] = self.config.get("groups_expressions", [])
+        self.groups_args: Set[str] = {
+            eval_arg
+            for eval_arg in EvalArgs
+            if eval_arg.value in " ".join(self.groups_expressions)
+        }
+        self.groups_repr = drop_prefix(join_par(*self.groups_expressions))
+        self.expressions_repr = drop_prefix(join(*self.expressions))
+        # Aggregation options
         self.method_aggregate: str = self.config.get("method_aggregate", "mean")
         assert self.method_aggregate in [
             "mean",
@@ -82,12 +132,14 @@ class Plotter:
         ), f"Invalid method_error: {self.method_error}"
         self.n_samples_shown: int = self.config.get("n_samples_shown", 0)
         self.max_n_runs: int = self.config.get("max_n_runs", np.inf)
+        self.max_n_curves: int = self.config.get("max_n_curves", np.inf)
         if self.max_n_runs in [None, "None", "null", "inf", "np.inf"]:
             self.max_n_runs = np.inf
         # Plotting interface options
-        self.label_individual: str = self.config.get("label_individual", "run_name")
-        self.label_group: str = self.config.get("label_group", None)
-        self.title: str = self.config.get("title", None)
+        self.label_expression: str = self.config.get(
+            "label_expression", self.default_label_expression
+        )
+        self.title_expression: str = self.config.get("title_expression", None)
         self.x_axis: str = self.config.get("x_axis", "_step")
         self.x_lim = self.config.get("x_lim", None)
         if self.x_lim is None:
@@ -112,84 +164,250 @@ class Plotter:
             "path_save", "f'plots/plot_{metric}_{date}.png'"
         )
         # Define variables
-        self.run_dirs: List[str] = []
-        self.runs_data: List[Dict[str, Any]] = []
         self.grouped_data: Dict[Any, List[Dict[str, Any]]] = {}
         self.grouped_plot_kwargs: Dict[Any, Dict[str, Any]] = {}
 
-    def load_run_data(self, run_path: str) -> Dict[str, Any]:
-        """Loads scalar metrics and config from a run directory.
+    def load_grouped_data(self, run_dirs: List[str]) -> Dict[str, List[RunMetricData]]:
+        grouped_data: Dict[str, List[RunMetricData]] = {}
+        grouped_plot_kwargs: Dict[str, Dict[str, Any]] = {}
+        n_run_loaded = 0
+        n_curves_showed = 0
+        for run_path in tqdm(run_dirs, desc="[WandbPP plot] Filtering ..."):
+            if n_run_loaded >= self.max_n_runs:
+                break
+            # Get run name from run_path
+            run_name = os.path.basename(run_path)
+            # Load run config
+            config_path = os.path.join(run_path, self.file_config)
+            if os.path.exists(config_path):
+                with open(config_path, "r") as f:
+                    run_config = yaml.safe_load(f)
+            else:
+                run_config = {}
+                self.logger.warning(
+                    f"Could not find config file {self.file_config} in {run_path}. Using empty config."
+                )
+            run_config = OmegaConf.create(run_config)
+            # If filters contain only "config" or nothing (case 1), apply filters using only config
+            if self.filters_args in [set(), {EvalArgs.CONFIG}]:
+                if not self.apply_filters(run_name=run_name, run_config=run_config):
+                    return {}
+            # If grouping contain only "config" or nothing (case A), apply grouping using only config
+            if self.groups_args in [set(), {EvalArgs.CONFIG}]:
+                group_key = self.get_group_key(run_name=run_name, run_config=run_config)
+            # Load scalars file
+            scalars_path = os.path.join(run_path, self.file_scalars)
+            if not os.path.exists(scalars_path):
+                self.logger.error(
+                    f"Could not find scalars file {self.file_scalars} in {run_path}. Skipping run."
+                )
+                return {}
+            file_scalars = open(scalars_path, "r")
+            metrics = pd.read_csv(file_scalars)
+            file_scalars.close()
+            # Extract x values
+            if not self.x_axis in metrics.columns:
+                self.logger.error(
+                    f"Could not find x-axis column '{self.x_axis}' in run {run_name}. Skipping run."
+                )
+                return {}
+            x_values = metrics[self.x_axis]
+            # If filters don't contain "metric" and "x_values" but contain "metrics" (case 2), apply filters using only config and metrics
+            if (
+                EvalArgs.METRIC.value not in self.filters_args
+                and EvalArgs.X_VALUES.value not in self.filters_args
+                and EvalArgs.METRICS.value in self.filters_args
+            ):
+                if not self.apply_filters(
+                    run_name=run_name,
+                    run_config=run_config,
+                    metrics=metrics,
+                ):
+                    return {}
+            # If grouping don't contain "metric" and "x_values" but contain "metrics" (case B), apply grouping using only config and metrics
+            if (
+                EvalArgs.METRIC.value not in self.groups_args
+                and EvalArgs.X_VALUES.value not in self.groups_args
+                and EvalArgs.METRICS.value in self.groups_args
+            ):
+                group_key = self.get_group_key(
+                    run_name=run_name,
+                    run_config=run_config,
+                    metrics=metrics,
+                )
+            # Iterate on metrics
+            curve_is_added = False
+            for metric_expression in self.expressions:
+                # Break if max number of runs reached
+                if n_curves_showed >= self.max_n_curves:
+                    break
+                # Evaluate metric expression
+                try:
+                    metric_values = eval(
+                        metric_expression,
+                        {
+                            EvalArgs.CONFIG.value: run_config,
+                            EvalArgs.X_VALUES.value: x_values,
+                            EvalArgs.METRICS.value: metrics,
+                            **KWARGS_IMPORTS,
+                        },
+                    )
+                except Exception as e:
+                    self.logger.error(
+                        f"Could not evaluate metric expression '{metric_expression}' for run {run_name}, skipping this expression - {e}"
+                    )
+                    continue
+                # If filters contain "metric" (case 3), apply filters using all arguments
+                if EvalArgs.METRIC.value in self.filters_args:
+                    if not self.apply_filters(
+                        run_name=run_name,
+                        run_config=run_config,
+                        metric_expression=metric_expression,
+                        metric_values=metric_values,
+                        x_values=x_values,
+                        metrics=metrics,
+                    ):
+                        continue
+                # If grouping contain "metric" (case C), apply grouping using all arguments
+                if EvalArgs.METRIC.value in self.groups_args:
+                    group_key = self.get_group_key(
+                        run_name=run_name,
+                        run_config=run_config,
+                        metric_expression=metric_expression,
+                        metric_values=metric_values,
+                        x_values=x_values,
+                        metrics=metrics,
+                    )
+                # Create RunMetricData object
+                run_metric_data = RunMetricData(
+                    run_name=run_name,
+                    metric_expression=metric_expression,
+                    x_values=x_values,
+                    metric_values=metric_values,
+                    config=run_config,
+                )
+                # Add RunMetricData object to its group
+                group_key = self.get_group_key(
+                    run_name=run_name,
+                    run_config=run_config,
+                    metric_expression=metric_expression,
+                    metric_values=metric_values,
+                    x_values=x_values,
+                    metrics=metrics,
+                )
+                if not group_key in grouped_data:
+                    grouped_data[group_key] = []
+                grouped_data[group_key].append(run_metric_data)
+                # Increment number of curves showed and run loaded
+                n_curves_showed += 1
+                is_curve_added = True
+            # Increment number of run loaded
+            if is_curve_added:
+                n_run_loaded += 1
+        return grouped_data
+
+    def apply_filters(
+        self,
+        run_name: str,
+        run_config: Dict[str, Any],
+        metric_expression: Optional[str] = "all_metrics",
+        metric_values: Optional[np.ndarray] = None,
+        x_values: Optional[np.ndarray] = None,
+        metrics: Optional[pd.DataFrame] = None,
+    ):
+        """Applies filters on a RunMetricData components to determine if it should be included in the data.
+        A RunMetricData corresponds to a specific metric for a specific run.
+        RunMetricData components involves the config of the run, the "metric" the y_values of the metric on this run, "x" the x_values of the run, and can also involve metrics (the whole run dataframe).
+        All these fields except the run_name and config are optional for this method, but they must appear if they appear in the filters.
 
         Args:
-            run_path (str): Path to the run directory.
-
-        Returns:
-            Dict[str, Any]: Dictionary containing:
-                - scalars: DataFrame containing scalar metrics.
-                - config: OmegaConf object containing the run configuration.
-                - name: Name of the run.
-        """
-        # Load scalars
-        scalars_path = os.path.join(run_path, self.file_scalars)
-        if not os.path.exists(scalars_path):
-            logger.error(
-                f"Could not find scalars file {self.file_scalars} in {run_path}. Skipping run."
-            )
-            return None
-        scalars_df = pd.read_csv(scalars_path)
-        # Load config
-        config_path = os.path.join(run_path, self.file_config)
-        if os.path.exists(config_path):
-            with open(config_path, "r") as f:
-                run_config = yaml.safe_load(f)
-        else:
-            logger.warning(
-                f"Could not find config file {self.file_config} in {run_path}. Using empty config."
-            )
-            run_config = {}
-        run_config = OmegaConf.create(run_config)
-        # Get run name from run_path
-        run_name = os.path.basename(run_path)
-        # Return run data
-        return {"scalars": scalars_df, "config": run_config, "name": run_name}
-
-    def apply_filters(self, run_data: Dict[str, Any]) -> bool:
-        """Applies filters to determine if a run should be included.
-
-        Args:
-            run_data (Dict[str, Any]): Run data containing scalars and config.
+            run_name (str): The name of the run.
+            run_config (Dict[str, Any]): The config of the run.
+            metric_expression (str): The name of the metric.
+            metric (Optional[np.ndarray]): The values of the metric on this run.
+            x_values (Optional[np.ndarray]): The x_values of the run.
+            metrics (Optional[pd.DataFrame]): The run dataframe.
 
         Returns:
             bool: True if run satisfies all filters, False otherwise.
         """
-        run_config = run_data["config"]
-        for filter_condition in self.filters:
+        for filter_condition in self.filters_expressions:
             try:
-                if not eval(filter_condition, {"config": run_config, "re": re}):
+                if not eval(
+                    filter_condition,
+                    {
+                        EvalArgs.CONFIG.value: run_config,
+                        EvalArgs.METRIC.value: metric_values,
+                        EvalArgs.X_VALUES.value: x_values,
+                        EvalArgs.METRICS.value: metrics,
+                        EvalArgs.EXPRESSION.value: metric_expression,
+                        **KWARGS_IMPORTS,
+                    },
+                ):
                     return False
             except Exception as e:
-                logger.warning(
-                    f"Warning: Could not evaluate filter field '{filter_condition}' - {e}"
+                self.logger.warning(
+                    f"Warning: Could not evaluate filter condition '{filter_condition}' for run {run_name} metric {metric_expression}, skipping - {e}"
                 )
                 return False
         return True
 
-    def load_and_filter_run_data(self):
-        """Loads run data and applies filters to select runs for plotting."""
-        n_run = 0
-        for run_dir in tqdm(self.run_dirs, desc="[WandbPP plot] Filtering ..."):
-            if n_run >= self.max_n_runs:
-                break
-            run_data = self.load_run_data(run_dir)
-            if run_data and self.apply_filters(run_data):
-                self.runs_data.append(run_data)
-                n_run += 1
-        logger.info(f"Loaded {len(self.runs_data)} runs after filtering.")
+    def get_group_key(
+        self,
+        run_name: str,
+        run_config: Dict[str, Any],
+        metric_expression: Optional[str] = "all_metrics",
+        metric_values: Optional[np.ndarray] = None,
+        x_values: Optional[np.ndarray] = None,
+        metrics: Optional[pd.DataFrame] = None,
+    ) -> Tuple:
+        """Constructs a group key based on a RunMetricData components.
+        A RunMetricData corresponds to a specific metric for a specific run.
+        RunMetricData components involves the config of the run, the "metric" the y_values of the metric on this run, "x" the x_values of the run, and can also involve metrics (the whole run dataframe).
+        All these fields except the run_name and config and run_name are optional for this method, but they must appear if they appear in the grouping.
+
+        Args:
+            run_name (str): The name of the run.
+            run_config (Dict[str, Any]): The config of the run.
+            metric_expression (str): The expression of the metric.
+            metric (Optional[np.ndarray]): The values of the metric on this run.
+            x_values (Optional[np.ndarray]): The x_values of the run.
+            metrics (Optional[pd.DataFrame]): The run dataframe.
+
+        Returns:
+            Tuple: The group key.
+        """
+        group_key = []
+        for field in self.groups_expressions:
+            try:
+                if field is None:  # null field means a dummy group
+                    group_key.append("None")
+                else:
+                    value = str(
+                        eval(
+                            field,
+                            {
+                                EvalArgs.CONFIG.value: run_config,
+                                EvalArgs.METRIC.value: metric_values,
+                                EvalArgs.X_VALUES.value: x_values,
+                                EvalArgs.METRICS.value: metrics,
+                                EvalArgs.EXPRESSION.value: metric_expression,
+                            },
+                        )
+                    )
+            except Exception as e:
+                self.logger.warning(
+                    f"Could not evaluate grouping field '{field}' for run {run_name}, skipping - {e}"
+                )
+                value = "None"  # assign 'None' if field evaluation fails
+            group_key.append(value)
+        group_key = tuple(group_key)  # use tuple for hashability
+        return group_key
 
     def group_runs(self):
         """Groups runs based on specified grouping fields."""
         # If no grouping fields, group all runs together
-        if len(self.grouping_fields) == 0:
+        if len(self.groups_expressions) == 0:
             self.grouped_data = self.grouped_data = {
                 run["name"]: [run] for run in self.runs_data
             }
@@ -197,7 +415,7 @@ class Plotter:
             return
         # Initialize mappings from field to plot kwargs
         self.field_to_plot_kwargs: Dict[str, Dict[str, Any]] = {}
-        for idx, field in enumerate(self.grouping_fields):
+        for idx, field in enumerate(self.groups_expressions):
             if idx >= len(self.groups_plot_kwargs):
                 break  # don't try to get plot kwargs if not enough are provided
             self.field_to_plot_kwargs[field] = omegaconf.OmegaConf.to_container(
@@ -205,7 +423,7 @@ class Plotter:
             )
             self.field_to_plot_kwargs[field]["values"] = []
         # Initialize mappings from group key to runs and plot kwargs
-        logger.info(f"Grouping runs by {self.grouping_fields_repr}...")
+        self.logger.info(f"Grouping runs by {self.groups_repr}...")
         self.grouped_data: Dict[Any, List[Dict[str, Any]]] = {}
         self.grouped_plot_kwargs: Dict[Any, Dict[str, Any]] = {}
         # Iterate on the runs data
@@ -214,21 +432,21 @@ class Plotter:
             run_name = run_data["name"]
             # Construct group key
             group_key = []
-            for field in self.grouping_fields:
+            for field in self.groups_expressions:
                 try:
                     if field is None:  # null field means a dummy group
                         group_key.append("None")
                     else:
                         value = str(eval(field, {"config": run_config}))
                 except Exception as e:
-                    logger.warning(
+                    self.logger.warning(
                         f"Could not evaluate grouping field '{field}' for run {run_name}, skipping - {e}"
                     )
                     value = "None"  # assign 'None' if field evaluation fails
                 group_key.append(value)
             group_key = tuple(group_key)  # use tuple for hashability
             # Add eventually new value for field to plot kwargs
-            for field, value in zip(self.grouping_fields, group_key):
+            for field, value in zip(self.groups_expressions, group_key):
                 if (
                     field in self.field_to_plot_kwargs
                     and value not in self.field_to_plot_kwargs[field]["values"]
@@ -238,7 +456,7 @@ class Plotter:
             if group_key not in self.grouped_data:
                 self.grouped_data[group_key] = []
                 plot_kwargs = {}
-                for field, value in zip(self.grouping_fields, group_key):
+                for field, value in zip(self.groups_expressions, group_key):
                     if field in self.field_to_plot_kwargs:
                         key = self.field_to_plot_kwargs[field]["key"]
                         values = self.field_to_plot_kwargs[field]["values"]
@@ -253,8 +471,8 @@ class Plotter:
 
         grouped_data_keys = list(self.grouped_data.keys())
         lengths_groups = [len(v) for v in self.grouped_data.values()]
-        logger.info(
-            f"Obtained {len(grouped_data_keys)} groups by grouping by {self.grouping_fields_repr} : {grouped_data_keys if len(grouped_data_keys) < 10 else grouped_data_keys[:10] + ['...']}, of sizes {lengths_groups if len(lengths_groups) < 10 else lengths_groups[:10] + ['...']} (average {np.mean(lengths_groups):.2f} ± {np.std(lengths_groups):.2f}, runs/group, min {np.min(lengths_groups)}, max {np.max(lengths_groups)})"
+        self.logger.info(
+            f"Obtained {len(grouped_data_keys)} groups by grouping by {self.groups_repr} : {grouped_data_keys if len(grouped_data_keys) < 10 else grouped_data_keys[:10] + ['...']}, of sizes {lengths_groups if len(lengths_groups) < 10 else lengths_groups[:10] + ['...']} (average {np.mean(lengths_groups):.2f} ± {np.std(lengths_groups):.2f}, runs/group, min {np.min(lengths_groups)}, max {np.max(lengths_groups)})"
         )
 
     def try_include_y0(
@@ -315,283 +533,240 @@ class Plotter:
 
         return sanitized_path
 
-    def plot_grouped_data(self):
+    def treat_grouped_data(self, grouped_data: Dict[Any, List[RunMetricData]]):
         """Plots metrics with mean and standard error for each group.
         Also defines y_min and y_max based on the metric values.
         """
-
         # Define label function
-        if len(self.grouping_fields) == 0:
-            # No grouping, use the label_individual as the key
-            def label_fn(group_key, config):
-                try:
-                    return eval(
-                        self.label_individual, {"config": config, "run_name": group_key}
+        def label_fn(config: Dict[str, Any], group_key: Tuple, run_name: str):
+            try:
+                return eval(
+                    self.label_expression,
+                    {
+                        EvalArgs.CONFIG.value: config,
+                        EvalArgs.GROUP_KEY.value: group_key,
+                        EvalArgs.RUN_NAME.value: run_name,
+                        EvalArgs.JOIN_FN.value: join,
+                        EvalArgs.JOIN_PAR_FN.value: join_par,
+                        EvalArgs.DROP_PREFIX_FN.value: drop_prefix,
+                    },
+                )
+            except Exception as e:
+                self.logger.error(
+                    f"Could not evaluate label_expression expression '{self.label_expression}', using run name instead - {e}"
+                )
+                return group_key
+
+        # Iterate on the groups
+        plt.figure(figsize=self.figsize)
+        y_min, y_max = np.inf, -np.inf
+        for group_key, list_runs_metric_data in grouped_data.items():
+            n_curve_plotted = 0
+            # Get the merged DataFrame for all runs in the group
+            list_metric_values: List[pd.Series] = []
+            x_values_global: pd.Series = pd.Series()
+            max_t = -np.inf
+            for run_metric_data in list_runs_metric_data:
+                # Get the metric values
+                metric_values = run_metric_data.metric_values
+                list_metric_values.append(metric_values)
+                # Get the x-axis values global
+                x_values = run_metric_data.x_values
+                if max_t < x_values.max():
+                    max_t = x_values.max()
+                    x_values_global = x_values
+            if not list_metric_values:  # Skip group if no valid data
+                breakpoint()
+                self.logger.warning(f"Skipping group {group_key} due to missing data.")
+                continue
+            else:
+                self.logger.info(
+                    f"Plotting group {group_key} with {len(list_metric_values)} runs"
+                )
+            merged_df = pd.concat(list_metric_values, axis=1, join="outer")
+
+            # Get plot kwargs
+            plot_kwargs = self.default_plot_kwargs
+            if group_key in self.grouped_plot_kwargs:
+                plot_kwargs.update(self.grouped_plot_kwargs[group_key])
+
+            # Compute aggregated values
+            mean_values = merged_df.mean(axis=1, skipna=True)
+            if self.method_aggregate == "mean":
+                values_aggregated = mean_values
+            elif self.method_aggregate == "median":
+                values_aggregated = merged_df.median(axis=1, skipna=True)
+            elif self.method_aggregate == "max":
+                values_aggregated = merged_df.max(axis=1, skipna=True)
+            elif self.method_aggregate == "min":
+                values_aggregated = merged_df.min(axis=1, skipna=True)
+            else:
+                raise ValueError(f"Invalid method_aggregate: {self.method_aggregate}")
+
+            # Compute error values
+            delta_low = delta_high = None
+            if self.method_error == "std":
+                delta_low = delta_high = merged_df.std(axis=1, skipna=True)
+            elif self.method_error == "sem":
+                delta_low = delta_high = merged_df.sem(axis=1, skipna=True)
+            elif self.method_error == "range":
+                delta_low = mean_values - merged_df.min(axis=1, skipna=True)
+                delta_high = merged_df.max(axis=1, skipna=True) - mean_values
+            elif self.method_error == "iqr":
+                q1 = merged_df.quantile(0.25, axis=1)
+                q3 = merged_df.quantile(0.75, axis=1)
+                delta_low = mean_values - q1
+                delta_high = q3 - mean_values
+            elif self.method_error.startswith("percentile"):
+                q = float(self.method_error.split("_")[-1])
+                delta_low = mean_values - merged_df.quantile(q / 2, axis=1)
+                delta_high = merged_df.quantile(1 - q / 2, axis=1) - mean_values
+            elif self.method_error == "none":
+                pass
+            else:
+                raise ValueError(f"Invalid method_error: {self.method_error}")
+
+            # Plot aggregated values
+            plt.plot(
+                x_values_global,
+                values_aggregated,
+                label=(
+                    label_fn(
+                        group_key=group_key,
+                        config=list_runs_metric_data[0].config,
+                        run_name=list_runs_metric_data[0].run_name,
                     )
-                except Exception as e:
-                    logger.error(
-                        f"Could not evaluate label_individual expression '{self.label_individual}', using run name instead - {e}"
-                    )
-                    return group_key
-
-        elif self.grouping_fields == [None]:
-            # Grouping by None, use the method_aggregate as the label
-            label_fn = lambda group_key, config: self.method_aggregate
-        elif self.label_group not in [None, "group_key"]:
-            # Grouping with multiple groups, use the label_group as the label
-            def label_fn(group_key, config):
-                try:
-                    return eval(
-                        self.label_group, {"config": config, "group_key": group_key}
-                    )
-                except Exception as e:
-                    logger.error(
-                        f"Could not evaluate label_group expression '{self.label_group}', using group key instead - {e}"
-                    )
-                    return group_key
-
-        else:
-            # Grouping with multiple groups, use the group key as the label
-            def label_fn(group_key, config):
-                if len(group_key) == 1:
-                    return group_key[0]
-                else:
-                    return ", ".join(str(k) for k in group_key)
-
-        # Iterate on the metrics
-        for metric in self.metrics:
-            plt.figure(figsize=self.figsize)
-            y_min, y_max = np.inf, -np.inf
-            n_plot = 0
-            for group_key, runs_data in self.grouped_data.items():
-                # Get the merged DataFrame for all runs in the group
-                list_group_dfs: List[pd.DataFrame] = []
-                df_x_values = pd.DataFrame()
-                max_t = -np.inf
-                for run in runs_data:
-                    df: pd.DataFrame = run["scalars"]
-                    if self.x_axis in df.columns:
-                        try:
-                            metric_values = eval(metric, {"metrics": df, "np": np})
-                            df[metric] = metric_values
-                            list_group_dfs.append(df[[metric]])
-                            # Get the x-axis values (take last DataFrame as reference)
-                            if max_t < df[self.x_axis].max():
-                                max_t = df[self.x_axis].max()
-                                df_x_values = df[[self.x_axis]]
-                        except Exception as e:
-                            logger.error(
-                                f"Could not evaluate metric expression '{metric}' for run {run['name']}, skipping - {e}"
-                            )
-                            continue
-                    else:
-                        logger.error(
-                            f"Could not find x-axis column '{self.x_axis}' in run {run['name']}, skipping."
-                        )
-                if not list_group_dfs:  # Skip group if no valid data
-                    logger.warning(f"Skipping group {group_key} due to missing data.")
-                    continue
-                merged_df = pd.concat(list_group_dfs, axis=1, join="outer")
-                x_values = df_x_values[self.x_axis]
-
-                # Get plot kwargs
-                plot_kwargs = self.default_plot_kwargs
-                if group_key in self.grouped_plot_kwargs:
-                    plot_kwargs.update(self.grouped_plot_kwargs[group_key])
-
-                # Compute aggregated values
-                mean_values = merged_df.mean(axis=1, skipna=True)
-                if self.method_aggregate == "mean":
-                    values_aggregated = mean_values
-                elif self.method_aggregate == "median":
-                    values_aggregated = merged_df.median(axis=1, skipna=True)
-                elif self.method_aggregate == "max":
-                    values_aggregated = merged_df.max(axis=1, skipna=True)
-                elif self.method_aggregate == "min":
-                    values_aggregated = merged_df.min(axis=1, skipna=True)
-                else:
-                    raise ValueError(
-                        f"Invalid method_aggregate: {self.method_aggregate}"
-                    )
-
-                # Compute error values
-                delta_low = delta_high = None
-                if self.method_error == "std":
-                    delta_low = delta_high = merged_df.std(axis=1, skipna=True)
-                elif self.method_error == "sem":
-                    delta_low = delta_high = merged_df.sem(axis=1, skipna=True)
-                elif self.method_error == "range":
-                    delta_low = mean_values - merged_df.min(axis=1, skipna=True)
-                    delta_high = merged_df.max(axis=1, skipna=True) - mean_values
-                elif self.method_error == "iqr":
-                    q1 = merged_df.quantile(0.25, axis=1)
-                    q3 = merged_df.quantile(0.75, axis=1)
-                    delta_low = mean_values - q1
-                    delta_high = q3 - mean_values
-                elif self.method_error.startswith("percentile"):
-                    q = float(self.method_error.split("_")[-1])
-                    delta_low = mean_values - merged_df.quantile(q / 2, axis=1)
-                    delta_high = merged_df.quantile(1 - q / 2, axis=1) - mean_values
-                elif self.method_error == "none":
-                    pass
-                else:
-                    raise ValueError(f"Invalid method_error: {self.method_error}")
-
-                # Plot aggregated values
-                plt.plot(
-                    x_values,
-                    values_aggregated,
-                    label=(
-                        str(
-                            label_fn(group_key=group_key, config=runs_data[0]["config"])
-                        )
-                        if n_plot < self.max_legend_length
-                        else None
-                    ),
+                    if n_curve_plotted < self.max_legend_length
+                    else None
+                ),
+                **plot_kwargs,
+            )
+            n_curve_plotted += 1
+            if delta_low is not None and delta_high is not None:
+                plt.fill_between(
+                    x_values_global,
+                    mean_values - delta_low,
+                    mean_values + delta_high,
+                    alpha=self.alpha_shaded,
                     **plot_kwargs,
                 )
-                n_plot += 1
-                if delta_low is not None and delta_high is not None:
-                    plt.fill_between(
-                        x_values,
-                        mean_values - delta_low,
-                        mean_values + delta_high,
-                        alpha=self.alpha_shaded,
-                        **plot_kwargs,
-                    )
 
-                # Plot samples
-                n = merged_df.shape[1]
-                sampled_indices = np.random.choice(
-                    np.arange(n), size=min(self.n_samples_shown, n), replace=False
+            # Plot samples
+            n = merged_df.shape[1]
+            sampled_indices = np.random.choice(
+                np.arange(n), size=min(self.n_samples_shown, n), replace=False
+            )
+            for i in sampled_indices:
+                plt.plot(
+                    x_values_global,
+                    merged_df.iloc[:, i],
+                    alpha=self.alpha_shaded,
+                    **plot_kwargs,
                 )
-                for i in sampled_indices:
-                    plt.plot(
-                        x_values,
-                        merged_df.iloc[:, i],
-                        alpha=self.alpha_shaded,
-                        **plot_kwargs,
-                    )
 
-                # Update y_min and y_max based on the group values
-                if delta_low is not None and delta_high is not None:
-                    y_min = min(values_aggregated.min() - delta_low.min(), y_min)
-                    y_max = max(values_aggregated.max() + delta_high.max(), y_max)
+            # Update y_min and y_max based on the group values
+            if delta_low is not None and delta_high is not None:
+                y_min = min(values_aggregated.min() - delta_low.min(), y_min)
+                y_max = max(values_aggregated.max() + delta_high.max(), y_max)
+            else:
+                y_min = min(values_aggregated.min(), y_min)
+                y_max = max(values_aggregated.max(), y_max)
+
+        # Don't plot if no data
+        if y_min == np.inf and y_max == -np.inf:
+            self.logger.error("No data to plot.")
+            return
+
+        # ======= Plot settings =======
+        plt.xlabel(self.x_axis)
+        plt.ylabel(self.expressions_repr)
+        # Set x and y limits
+        plt.xlim(self.x_lim)
+        if self.do_try_include_y0:
+            y_lim = self.try_include_y0(self.y_lim, y_min=y_min, y_max=y_max)
+        plt.ylim(y_lim)
+        # Legend and grid
+        if len(self.groups_expressions) == 0:
+            title_legend = None
+        elif n_curve_plotted > self.max_legend_length:
+            title_legend = (
+                f"Groups (first {self.max_legend_length} shown / {n_curve_plotted} total)"
+            )
+        else:
+            title_legend = "Groups"
+        plt.legend(title=title_legend, **self.config.get("kwargs_legend", {}))
+        plt.grid(**self.config.get("kwargs_grid", {}))
+        # Title
+        if self.method_error == "none":
+            string_methods_agg_error = f"{self.method_aggregate}"
+        else:
+            string_methods_agg_error = f"{self.method_aggregate}, σ={self.method_error}"
+        if self.title_expression is not None:
+            try:
+                title = eval(
+                    self.title_expression,
+                    {
+                        "expressions": self.expressions_repr,
+                        "groups": self.groups_repr,
+                    },
+                )
+            except Exception as e:
+                if len(self.groups_expressions) == 0:
+                    title = f"{self.expressions_repr} ({string_methods_agg_error})"
                 else:
-                    y_min = min(values_aggregated.min(), y_min)
-                    y_max = max(values_aggregated.max(), y_max)
-
-            # Don't plot if no data
-            if y_min == np.inf and y_max == -np.inf:
-                logger.error("No data to plot.")
-                return
-
-            # ======= Plot settings =======
-            plt.xlabel("Steps")
-            metric_repr = metric.replace("metrics.", "")
-            plt.ylabel(metric_repr)
-            # Set x and y limits
-            plt.xlim(self.x_lim)
-            if self.do_try_include_y0:
-                y_lim = self.try_include_y0(self.y_lim, y_min=y_min, y_max=y_max)
-            plt.ylim(y_lim)
-            # Legend and grid
-            if len(self.grouping_fields) == 0:
-                title_legend = None
-            elif n_plot > self.max_legend_length:
-                title_legend = (
-                    f"Groups (first {self.max_legend_length} shown / {n_plot} total)"
+                    title = f"{self.expressions_repr} (grouped by {self.groups_repr} : {string_methods_agg_error})"
+                self.logger.error(
+                    f"Could not evaluate title expression '{self.title_expression}', using default title '{title}' instead - {e}"
                 )
-            else:
-                title_legend = "Groups"
-            plt.legend(title=title_legend, **self.config.get("kwargs_legend", {}))
-            plt.grid(**self.config.get("kwargs_grid", {}))
-            # Title
-            if self.method_error == "none":
-                string_methods_agg_error = f"{self.method_aggregate}"
-            else:
-                string_methods_agg_error = (
-                    f"{self.method_aggregate}, σ={self.method_error}"
-                )
-            if self.title is not None:
-                try:
-                    title = eval(
-                        self.title,
-                        {
-                            "metric": metric_repr,
-                            "grouping_fields_repr": self.grouping_fields_repr,
-                        },
-                    )
-                except Exception as e:
-                    if len(self.grouping_fields) == 0 or self.grouping_fields == [None]:
-                        title = f"{metric_repr} ({string_methods_agg_error})"
-                    else:
-                        title = f"{metric_repr} (grouped by {self.grouping_fields_repr} : {string_methods_agg_error})"
-                    logger.error(
-                        f"Could not evaluate title expression '{self.title}', using default title '{title}' instead - {e}"
-                    )
-            elif len(self.grouping_fields) == 0 or self.grouping_fields == [None]:
-                title = f"{metric_repr} ({string_methods_agg_error})"
-            else:
-                title = f"{metric_repr} (grouped by {self.grouping_fields_repr} : {string_methods_agg_error})"
-            plt.title(title, **self.config.get("kwargs_title", {}))
+        elif len(self.groups_expressions) == 0:
+            title = f"{self.expressions_repr} ({string_methods_agg_error})"
+        else:
+            title = f"{self.expressions_repr} (grouped by {self.groups_repr} : {string_methods_agg_error})"
+        plt.title(title, **self.config.get("kwargs_title", {}))
 
-            # Show plot
-            if self.do_show and self.do_show_one_by_one:
-                plt.show()
-
-            # Save plot
-            if self.do_save:
-                metric_repr_file_compatible = metric_repr.replace("/", "_per_")
-                try:
-                    path_save = eval(
-                        self.path_save,
-                        {"metric": metric_repr_file_compatible, "date": self.date},
-                    )
-                except Exception as e:
-                    path_save = (
-                        f"plots/plot_{metric_repr_file_compatible}_{self.date}.png"
-                    )
-                    logger.error(
-                        f"Could not evaluate path_save expression '{self.path_save}', using default path '{path_save}' instead - {e}"
-                    )
-                path_save = self.sanitize_filepath(path_save)
-                os.makedirs(os.path.dirname(path_save), exist_ok=True)
-                plt.savefig(path_save, **self.config.get("kwargs_savefig", {}))
-                logger.info(f"Saved metric plot {metric_repr} plot to {path_save}")
-
-        # Show all plots
-        if self.do_show and not self.do_show_one_by_one:
+        # Show plot
+        if self.do_show:
             plt.show()
 
+        # Save plot
+        if self.do_save:
+            metric_repr_file_compatible = self.expressions_repr.replace("/", "_per_")
+            try:
+                path_save = eval(
+                    self.path_save,
+                    {"metric": metric_repr_file_compatible, "date": self.date},
+                )
+            except Exception as e:
+                path_save = f"plots/plot_{metric_repr_file_compatible}_{self.date}.png"
+                self.logger.error(
+                    f"Could not evaluate path_save expression '{self.path_save}', using default path '{path_save}' instead - {e}"
+                )
+            path_save = self.sanitize_filepath(path_save)
+            os.makedirs(os.path.dirname(path_save), exist_ok=True)
+            plt.savefig(path_save, **self.config.get("kwargs_savefig", {}))
+            self.logger.info(
+                f"Saved metric plot {self.expressions_repr} plot to {path_save}"
+            )
+
+    # ======= Main function =======
     def run(self):
         """Executes the full pipeline: loading, filtering, grouping, and plotting."""
-        self.run_dirs = [
+        run_dirs = [
             os.path.join(self.runs_path, d)
             for d in os.listdir(self.runs_path)
             if os.path.isdir(os.path.join(self.runs_path, d))
         ]
-        logger.info(f"Found {len(self.run_dirs)} runs in {self.runs_path}.")
+        self.logger.info(f"Found {len(run_dirs)} runs in {self.runs_path}.")
 
         # Load and filter run data
-        self.load_and_filter_run_data()
-        if len(self.runs_data) == 0:
-            logger.error("No runs to plot.")
+        grouped_data = self.load_grouped_data(run_dirs=run_dirs)
+        if len(grouped_data) == 0:
+            self.logger.error("No runs to plot.")
             return
 
-        # Group runs based on specified fields
-        if len(self.grouping_fields) > 0:
-            self.group_runs()
-        else:
-            self.grouped_data = {run["name"]: [run] for run in self.runs_data}
-        if sum(len(v) for v in self.grouped_data.values()) == 0:
-            raise ValueError(
-                "Run were loaded but no runs were grouped. This should not happen."
-            )
-
         # Plot grouped data
-        self.plot_grouped_data()
-        logger.info("End.")
+        self.treat_grouped_data(grouped_data=grouped_data)
+        self.logger.info("End.")
 
 
 @hydra.main(
@@ -601,7 +776,7 @@ class Plotter:
 )
 def main(config: DictConfig):
     """Main function to initialize and run the Plotter."""
-    plotter = Plotter(config)
+    plotter = WandbppPlotter(config)
     plotter.run()
 
 
