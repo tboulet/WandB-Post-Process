@@ -12,14 +12,9 @@ file_config: config.yaml
 # ==== Data selection ====
 
 # The metric that will be used for the plot.
-expression: metrics.n_agents + metrics.n_plants * 2
-expressions:
-  - metrics.n_agents + metrics.n_plants * 2 + 100
-
-# Whether to show all metrics in the same plot (True) or one by one (False).
-# If True, data will be grouped by the metric names first (and then by the other grouping fields).
-# If False, several plots will be made for each metric.
-do_group_metrics: True
+metrics_expressions:
+  - metrics.n_plants.mean() * 1000
+  - metrics.n_agents.max() * 1000
 
 # The filters that will be applied to the config for accepting a run.
 # This will be done with an 'eval' function, so you can use any python code.
@@ -29,15 +24,25 @@ do_group_metrics: True
 # The groupings that will be applied to the config for grouping the runs.
 # It is composed of a list of python expressions that will be evaluated.
 # The data will be grouped by the unique values of the tuple expression.
-groups_expressions:
-  # - config.benchmark_name
-  - expression
-  - config.env.variability_fruits
+groups:
+  - expression : metric_expression
+    key_plot: linestyle
+    kwargs_plot:
+      "metrics.n_agents" : '-'
+      "metrics.n_plants" : '--'
+  - expression : config.env.variability_fruits
+    key_plot: color
+    kwargs_plot:
+      "[0, 0, 0, 0]" : 'green'
+      "[0.1, 0.1, 0.1, 0.1]" : 'blue'
+      "[0.5, 0.5, 0.5, 0.5]" : 'orange'
+      "[1, 1, 1, 1]" : 'red'
+  - config.benchmark_name
 
 # The methods to use for aggregation (solid line), error bars (shaded area) and samples (shaded lines)
 method_aggregate: median # among mean, median, min, max
 method_error: range # among std, sem, range, iqr, percentile_<q>, none
-n_samples_shown: 0 # the number of run sampled from each group that will be shown if shaded lines
+n_samples_shown: 4 # the number of run sampled from each group that will be shown if shaded lines
 
 # The maximum number of runs to show in the plot
 max_n_runs: 100
@@ -50,13 +55,6 @@ x_axis: _step
 
 
 # ==== Plotting interface options ====
-
-# Curve label function, as a function of "config", "group_key", "run_name" and helper repr functions.
-label_expression: join(*group_key)
-
-# Title, as a function of "expressions"=drop_prefix(*join(*expressions)) and "groups"=drop_prefix(join_par(*self.groups_expressions)).
-# If null, will be an hardcoded pretty representation of the expressions.
-title_expression: null
 
 # The x-limits of the plot. By default it will be the min and max of the x-axis metric. 
 x_lim: null
@@ -73,7 +71,7 @@ kwargs_legend:
   fontsize: small
 kwargs_title:
   fontsize: large
-default_plot_kwargs: 
+kwargs_plot: 
   color : 'black'
   linestyle: '-'
 # The alpha of the shaded area.
@@ -82,12 +80,6 @@ alpha_shaded: 0.1
 max_legend_length: 20
 # Figure size
 figsize: [10, 6]
-# The kwargs for the plot function that will be used for grouping.
-groups_plot_kwargs:
-  - key: linestyle
-    args: ['-', '--', '-.', ':']
-  - key: color
-    args: ['green', 'brown', 'blue', 'orange', 'red', 'brown', 'pink', 'gray', 'olive', 'cyan']
 
 
 
