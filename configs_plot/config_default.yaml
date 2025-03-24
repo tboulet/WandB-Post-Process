@@ -13,13 +13,13 @@ file_config: config.yaml
 
 # The metric that will be used for the plot.
 metrics_expressions:
-  - metrics.n_plants.mean() * 1000
-  - metrics.n_agents.max() * 1000
+  - metrics.n_agents.mean() + 10000
+  - metrics.n_agents + 10000
 
 # The filters that will be applied to the config for accepting a run.
 # This will be done with an 'eval' function, so you can use any python code.
-# filters_expressions:
-#   - config.benchmark_name == 'bench16_fp_hc'
+filters_expressions:
+  - config.benchmark_name == 'bench16_fp_hc'
 
 # The groupings that will be applied to the config for grouping the runs.
 # It is composed of a list of python expressions that will be evaluated.
@@ -37,7 +37,6 @@ groups:
       "[0.1, 0.1, 0.1, 0.1]" : 'blue'
       "[0.5, 0.5, 0.5, 0.5]" : 'orange'
       "[1, 1, 1, 1]" : 'red'
-  - config.benchmark_name
 
 # The methods to use for aggregation (solid line), error bars (shaded area) and samples (shaded lines)
 method_aggregate: median # among mean, median, min, max
@@ -45,7 +44,7 @@ method_error: range # among std, sem, range, iqr, percentile_<q>, none
 n_samples_shown: 4 # the number of run sampled from each group that will be shown if shaded lines
 
 # The maximum number of runs to show in the plot
-max_n_runs: 100
+max_n_runs: 30
 # The maximum number of curves to show in the plot
 max_n_curves: 100
 
@@ -103,6 +102,7 @@ kwargs_savefig:
 
 
 # ==== Other options ====
+
 
 
 # ==== Hydra config (do not change) ====

@@ -2,6 +2,8 @@ import datetime
 import logging
 import re
 import omegaconf
+import tbutils
+import tbutils.seed
 from tqdm import tqdm
 import yaml
 import os
@@ -161,13 +163,16 @@ class WandbppPlotter:
             config (DictConfig): Hydra configuration object.
         """
         self.config = dict(config)
-        # Set logger
+        # Set logger and seed
         self.logger = logging.getLogger(__name__)
         logging.basicConfig(
             level=logging.INFO,
             format="[WandbPP plot] %(asctime)s - %(levelname)s - %(message)s",
             force=True,
         )
+        seed = tbutils.seed.try_get_seed(self.config, warn_if_unvalid=False)
+        tbutils.seed.set_seed(seed)
+        self.logger.info(f"Seed set to {seed}.")
         # Date
         self.date = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         # Paths
@@ -587,6 +592,8 @@ class WandbppPlotter:
             )
             for list_runs_metric_data in grouped_data.values()
         )
+        bar_ticks = []
+        bar_labels = []
         for group_key, list_runs_metric_data in grouped_data.items():
             # Check if non empty group
             if not list_runs_metric_data:
@@ -737,11 +744,21 @@ class WandbppPlotter:
                 plt.bar(
                     [x],
                     values_aggregated[0],
-                    yerr=[[delta_low[0]], [delta_high[0]]],
                     label=label,
                     width=width,
                     **kwargs_plot_group,
                 )
+                n_curve_plotted += 1
+                if delta_low is not None and delta_high is not None:
+                    plt.errorbar(
+                        x,
+                        y=mean_values[0],
+                        yerr=[[delta_low[0]], [delta_high[0]]],
+                        fmt="o",
+                        **kwargs_plot_group,
+                    )
+                bar_ticks.append(x)
+                bar_labels.append(label)
                 n = merged_df.shape[1]
                 sampled_indices = np.random.choice(
                     np.arange(n), size=min(self.n_samples_shown, n), replace=False
@@ -754,7 +771,10 @@ class WandbppPlotter:
                         alpha=self.alpha_shaded,
                         **kwargs_plot_group,
                     )
-
+            # Set xticks
+            if type_metric_values == np.float64:
+                plt.xticks(bar_ticks, bar_labels, rotation=30)
+                
             # Update y_min and y_max based on the group values
             if delta_low is not None and delta_high is not None:
                 y_min = min(values_aggregated.min() - delta_low.min(), y_min)
