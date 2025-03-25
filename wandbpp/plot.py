@@ -1,3 +1,4 @@
+import cProfile
 import datetime
 import logging
 import re
@@ -15,6 +16,15 @@ from omegaconf import DictConfig, OmegaConf
 from typing import List, Dict, Any, Optional, Set, Tuple, Type, Union
 import enum
 
+# Logger
+logger = logging.getLogger(__name__)
+logging.basicConfig(
+    level=logging.INFO,
+    format="[WandbPP plot] %(asctime)s - %(levelname)s - %(message)s",
+    force=True,
+)
+        
+# Kwarg imports for eval
 KWARGS_IMPORTS = {"np": np, "pd": pd, "re": re}
 
 # Representation functions
@@ -164,12 +174,7 @@ class WandbppPlotter:
         """
         self.config = dict(config)
         # Set logger and seed
-        self.logger = logging.getLogger(__name__)
-        logging.basicConfig(
-            level=logging.INFO,
-            format="[WandbPP plot] %(asctime)s - %(levelname)s - %(message)s",
-            force=True,
-        )
+        self.logger = logger
         seed = tbutils.seed.try_get_seed(self.config, warn_if_unvalid=False)
         tbutils.seed.set_seed(seed)
         self.logger.info(f"Seed set to {seed}.")
@@ -803,13 +808,12 @@ class WandbppPlotter:
             y_lim = self.y_lim
         plt.ylim(y_lim)
         # Legend and grid
-        if len(self.groups) == 0:
-            title_legend = None
-        elif n_curve_plotted > self.max_legend_length:
-            title_legend = f"Groups (first {self.max_legend_length} shown / {n_curve_plotted} total)"
-        else:
-            title_legend = "Groups"
-        plt.legend(title=title_legend, **self.config.get("kwargs_legend", {}))
+        if len(self.groups) > 0:
+            if n_curve_plotted > self.max_legend_length:
+                title_legend = f"Groups (first {self.max_legend_length} shown / {n_curve_plotted} total)"
+            else:
+                title_legend = "Groups"
+            plt.legend(title=title_legend, **self.config.get("kwargs_legend", {}))
         plt.grid(**self.config.get("kwargs_grid", {}))
         # Title
         if self.method_error == "none":
@@ -888,4 +892,9 @@ def main(config: DictConfig):
 
 
 if __name__ == "__main__":
-    main()
+    with cProfile.Profile() as pr:
+        main()
+    log_file_cprofile = "logs/profile_stats.prof"
+    os.makedirs("logs", exist_ok=True)
+    pr.dump_stats(log_file_cprofile)
+    logger.info(f"[PROFILING] Profile stats dumped to {log_file_cprofile}. You can visualize it using 'snakeviz {log_file_cprofile}'")

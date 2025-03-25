@@ -1,7 +1,7 @@
 # ==== Paths and files ====
 
 # The path to the data that will be used for the plot (default: data/wandb_exports).
-runs_path: data/wandb_exports
+runs_path: data/wandbpp_exports
 
 # The name of the files that contain the scalars and the config
 file_scalars: scalars.csv

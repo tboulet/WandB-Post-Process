@@ -42,7 +42,7 @@ def main(config: DictConfig):
     data_types : Dict[str, bool] = config["data_types"]
     
     # Export directory
-    export_dir = config.get("export_dir", "data/wandb_exports")
+    export_dir = config.get("export_dir", "data/wandbpp_exports")
     os.makedirs(export_dir, exist_ok=True)
 
     logger.info(f"Fetching runs from W&B project: {wandb_project}...")    
