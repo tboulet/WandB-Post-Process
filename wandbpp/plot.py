@@ -18,12 +18,8 @@ import enum
 
 # Logger
 logger = logging.getLogger(__name__)
-logging.basicConfig(
-    level=logging.INFO,
-    format="[WandbPP plot] %(asctime)s - %(levelname)s - %(message)s",
-    force=True,
-)
-        
+
+
 # Kwarg imports for eval
 KWARGS_IMPORTS = {"np": np, "pd": pd, "re": re}
 
@@ -348,7 +344,8 @@ class WandbppPlotter:
                     continue
                 # Assert obtained metric values are of a valid type
                 valid_types = [pd.Series, np.float64]
-                if not isinstance(metric_values, tuple(valid_types)):
+                type_metric_values = self.get_general_type(metric_values)
+                if not type_metric_values in valid_types:
                     self.logger.error(
                         f"Invalid type for metric {metric_expression}: {type(metric_values)} is not in {valid_types}. Skipping this expression."
                     )
@@ -561,6 +558,14 @@ class WandbppPlotter:
         # Reconstruct the full path
         sanitized_path = os.path.join(directory, sanitized_filename)
 
+        # Only takes first 255 characters
+        if len(sanitized_path) > 255:
+            path, extension = os.path.splitext(sanitized_path)
+            path = path[:255]
+            sanitized_path = path + extension
+            self.logger.warning(
+                f"Saving path is too long, only taking the first 255 characters."
+            )
         return sanitized_path
 
     def treat_grouped_data(self, grouped_data: Dict[Any, List[RunMetricData]]):
@@ -647,25 +652,37 @@ class WandbppPlotter:
 
             # Get plot kwargs
             kwargs_plot_group = self.kwargs_plot.copy()
-            for group_subkey, dict_group in zip(group_key, self.groups):
+            indexes_group = self.group_indexer.get_group_index(group_key)
+            for num_group_category, (group_subkey, dict_group) in enumerate(zip(group_key, self.groups)):
                 if "key_plot" in dict_group:
-                    if "kwargs_plot" not in dict_group:
+                    if "kwargs_plot" not in dict_group and "args_plot" not in dict_group:
                         self.logger.warning(
-                            f"Group {expression_group} has a key_plot but no kwargs_plot. Skipping the label."
+                            f"Group {expression_group} has a key_plot but no args_plot/kwargs_plot. Skipping the label."
                         )
                         continue
                 else:
                     continue
                 key_plot = dict_group["key_plot"]
                 expression_group = dict_group["expression"]
-                kwargs_plot = dict_group["kwargs_plot"]
                 group_subkey_repr = str(group_subkey)
-                if group_subkey_repr not in kwargs_plot:
-                    self.logger.warning(
-                        f"Category {group_subkey_repr} not in kwargs_plot for group {expression_group}. Skipping the label."
-                    )
-                    continue
-                kwargs_plot_group[key_plot] = kwargs_plot[group_subkey_repr]
+                group_subkey_idx = indexes_group[num_group_category]
+                if "kwargs_plot" in dict_group:
+                    kwargs_plot = dict_group["kwargs_plot"]
+                    if group_subkey_repr not in kwargs_plot:
+                        self.logger.warning(
+                            f"Category {group_subkey_repr} not in kwargs_plot for group {expression_group}. Skipping the label/using args_plot."
+                        )
+                        if "args_plot" in dict_group:
+                            args_plot = dict_group["args_plot"]
+                            kwargs_plot_group[key_plot] = args_plot[group_subkey_idx % len(args_plot)]
+                        else:
+                            continue
+                    else:
+                        kwargs_plot_group[key_plot] = kwargs_plot[group_subkey_repr]
+                elif "args_plot" in dict_group:
+                    args_plot = dict_group["args_plot"]
+                    kwargs_plot_group[key_plot] = args_plot[group_subkey_idx % len(args_plot)]
+                    
 
             # Get group label
             label = (
@@ -740,12 +757,10 @@ class WandbppPlotter:
                         alpha=self.alpha_shaded,
                         **kwargs_plot_group,
                     )
-                    
+
             elif type_metric_values == np.float64:
                 # Plot the bars for aggregated values
-                x, width = self.group_indexer.get_x_and_width(
-                    group_key, x_min, x_max
-                )
+                x, width = self.group_indexer.get_x_and_width(group_key, x_min, x_max)
                 plt.bar(
                     [x],
                     values_aggregated[0],
@@ -779,7 +794,7 @@ class WandbppPlotter:
             # Set xticks
             if type_metric_values == np.float64:
                 plt.xticks(bar_ticks, bar_labels, rotation=30)
-                
+
             # Update y_min and y_max based on the group values
             if delta_low is not None and delta_high is not None:
                 y_min = min(values_aggregated.min() - delta_low.min(), y_min)
@@ -826,10 +841,6 @@ class WandbppPlotter:
             title = f"{self.metrics_expressions_repr} (grouped by {self.groups_repr} : {string_methods_agg_error})"
         plt.title(title, **self.config.get("kwargs_title", {}))
 
-        # Show plot
-        if self.do_show:
-            plt.show()
-
         # Save plot
         if self.do_save:
             metric_repr_file_compatible = self.metrics_expressions_repr.replace(
@@ -851,6 +862,10 @@ class WandbppPlotter:
             self.logger.info(
                 f"""Saved plot for metrics "{self.metrics_expressions_repr}" to {path_save}"""
             )
+
+        # Show plot
+        if self.do_show:
+            plt.show()
 
     # ======= Utility functions =======
     def get_general_type(self, value: Any) -> Type:
@@ -874,6 +889,9 @@ class WandbppPlotter:
 
         # Load and filter run data
         grouped_data = self.load_grouped_data(run_dirs=run_dirs)
+        if sum(len(v) for v in grouped_data.values()) == 0:
+            self.logger.error("No data to plot. Exiting.")
+            return
 
         # Plot grouped data
         self.treat_grouped_data(grouped_data=grouped_data)
@@ -886,6 +904,11 @@ class WandbppPlotter:
     version_base="1.3.2",
 )
 def main(config: DictConfig):
+    logging.basicConfig(
+        level=logging.INFO,
+        format="[WandbPP plot] %(asctime)s - %(levelname)s - %(message)s",
+        force=True,
+    )
     """Main function to initialize and run the Plotter."""
     plotter = WandbppPlotter(config)
     plotter.run()
@@ -897,4 +920,6 @@ if __name__ == "__main__":
     log_file_cprofile = "logs/profile_stats.prof"
     os.makedirs("logs", exist_ok=True)
     pr.dump_stats(log_file_cprofile)
-    logger.info(f"[PROFILING] Profile stats dumped to {log_file_cprofile}. You can visualize it using 'snakeviz {log_file_cprofile}'")
+    logger.info(
+        f"[PROFILING] Profile stats dumped to {log_file_cprofile}. You can visualize it using 'snakeviz {log_file_cprofile}'"
+    )
